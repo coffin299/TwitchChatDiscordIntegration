@@ -47,10 +47,15 @@ Twitch のチャットを **VOICEVOX / COEIROINK** で音声合成し、**Discor
    - Scopes: `bot`, `applications.commands`
    - Bot Permissions: `Connect`, `Speak`, `View Channels`
 
-### 2. 依存パッケージをインストール
+### 2. 仮想環境（.venv）と依存パッケージ
+
+`start.bat` を使う場合は **初回起動時に `.venv` の作成と依存パッケージのインストールを自動で行う** ため、この手順は不要です。
+
+手動で行う場合:
 
 ```powershell
-pip install -r requirements.txt
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install --no-compile -r requirements.txt
 ```
 
 ### 3. 設定ファイルを作成
@@ -99,7 +104,7 @@ python -B main.py --list-speakers
 python -B main.py
 ```
 
-`start.bat` をダブルクリックしても起動できます。`-B` は `__pycache__` を作らないためのオプションです（`main.py` 内でも無効化済み）。
+`start.bat` をダブルクリックしても起動できます（`.venv` が無ければ作成し、依存パッケージが足りなければ `.venv` にインストールしてから起動します）。手動で `.venv` を作った場合は `python` を `.venv\Scripts\python.exe` に読み替えてください。`-B` は `__pycache__` を作らないためのオプションです（`main.py` 内でも無効化済み）。
 
 ## 使い方
 
@@ -243,6 +248,7 @@ tts_bot/
 
 | 症状 | 対処 |
 | :--- | :--- |
+| `No module named 'aiohttp'` など | 依存パッケージ未インストール。`start.bat` で起動するか、`.venv\Scripts\python.exe -m pip install -r requirements.txt` を実行 |
 | `/tts` コマンドが出ない | Bot 招待時に `applications.commands` スコープを付けたか確認。Discord クライアントを再起動（Ctrl+R）すると出ることがあります |
 | `/tts_setting` が出ない | 「サーバー管理」権限が必要です |
 | `/tts_setting` で保存失敗 | Bot の実行ユーザーが `config.yaml` に書き込めるか、YAML が壊れていないか確認 |
