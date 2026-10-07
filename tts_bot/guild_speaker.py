@@ -27,10 +27,13 @@ class GuildSpeaker:
         engines: dict[str, TTSEngine],
         get_voice_client: Callable[[], discord.VoiceClient | None],
         ffmpeg_path: str,
+        channel_override: tuple[str, ...] | None = None,
     ) -> None:
         self.guild_id = guild_id
         # /tts join で指定された Discord ユーザーの設定
         self.profile = profile
+        # /tts join twitch:... で一時指定されたチャンネル（リロード後も維持）
+        self.channel_override = channel_override
         self._engines = engines
         self._get_voice_client = get_voice_client
         self._ffmpeg_path = ffmpeg_path

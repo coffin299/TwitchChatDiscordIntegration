@@ -36,6 +36,24 @@ def _format_channels(channels: tuple[str, ...]) -> str:
     return ", ".join(f"#{c}" for c in channels)
 
 
+async def _ensure_can_edit(
+    bot: TwitchTTSBot,
+    interaction: discord.Interaction,
+    target: discord.abc.User,
+) -> bool:
+    """target の登録を変更してよいか判定し、不可なら通知して False を返す。"""
+    # 自分自身の登録は誰でも可
+    if target.id == interaction.user.id:
+        return True
+    # 他人の登録は Bot オーナーのみ
+    if await bot.is_owner(interaction.user):
+        return True
+    await interaction.response.send_message(
+        "他のユーザーの登録は Bot オーナーのみ行えます。", ephemeral=True
+    )
+    return False
+
+
 def register_commands(bot: TwitchTTSBot) -> None:
     """全スラッシュコマンドを CommandTree に登録する。"""
     bot.tree.add_command(_build_tts_group(bot))
@@ -65,19 +83,42 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
         name="join", description="あなたのいる VC で Twitch コメントを読み上げます"
     )
     @app_commands.describe(
-        user="誰の Twitch を読むか（省略時は自分）"
+        user="誰の設定で読むか（省略時は自分）",
+        twitch="読む Twitch の URL / チャンネル名（未登録でも読める一時指定）",
+        save="twitch を user の登録として config.yaml に保存する",
     )
     async def join(
         interaction: discord.Interaction,
         user: discord.Member | None = None,
+        twitch: str | None = None,
+        save: bool = False,
     ) -> None:
         target = user or interaction.user
-        profile = bot.config.users.get(target.id)
-        # 読む対象の Twitch が未登録なら登録を案内
-        if profile is None:
+        # twitch 指定があれば正規化（不正なら弾く）
+        channels: tuple[str, ...] | None = None
+        if twitch:
+            try:
+                channels = parse_channels(twitch)
+            except ConfigError as exc:
+                await interaction.response.send_message(
+                    f"❌ {exc}", ephemeral=True
+                )
+                return
+        # 保存には保存する内容（twitch）が必要
+        if save and channels is None:
+            await interaction.response.send_message(
+                "save を使うときは twitch も指定してください。", ephemeral=True
+            )
+            return
+        # 保存する場合は他人の登録権限を確認
+        if save and not await _ensure_can_edit(bot, interaction, target):
+            return
+        # 保存しない場合は、読む対象の設定をここで確定させる
+        if not save and bot.config.profile_for(target.id, channels) is None:
             who = "あなた" if target == interaction.user else target.mention
             await interaction.response.send_message(
                 f"{who} の Twitch は未登録です。"
+                "`/tts join twitch:<URL>` で一時指定するか、"
                 "`/tts_setting twitch:<URL>` で登録してください。",
                 ephemeral=True,
             )
@@ -90,8 +131,22 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
                 "先にボイスチャンネルに入ってください。", ephemeral=True
             )
             return
-        # VC 接続は 3 秒を超えることがあるため先に応答を保留する
+        # VC 接続・保存は 3 秒を超えることがあるため先に応答を保留する
         await interaction.response.defer()
+        override = channels
+        if save and channels is not None:
+            # 登録として保存した後は一時指定ではなく登録内容で読む
+            try:
+                await bot.save_user_setting(target.id, channels)
+            except (ConfigError, OSError) as exc:
+                await interaction.followup.send(f"❌ 保存に失敗しました: {exc}")
+                return
+            override = None
+        profile = bot.config.profile_for(target.id, override)
+        # 保存直後のリロードで消える等の異常時は中断
+        if profile is None:
+            await interaction.followup.send("❌ ユーザー設定が見つかりません。")
+            return
         vc = interaction.guild.voice_client if interaction.guild else None
         # 既に接続中なら移動、未接続なら新規接続
         if isinstance(vc, discord.VoiceClient):
@@ -99,10 +154,18 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
         else:
             await state.channel.connect(self_deaf=True)
         # このサーバーで対象ユーザーの Twitch の読み上げを開始
-        bot.start_session(state.channel.guild.id, profile)
+        bot.start_session(state.channel.guild.id, profile, override)
+        # 一時指定か登録済みかを表示
+        if override is not None:
+            note = "（一時指定）"
+        elif save:
+            note = "（config.yaml に保存済み）"
+        else:
+            note = ""
         await interaction.followup.send(
             f"🔊 {state.channel.mention} で "
-            f"{_format_channels(profile.twitch_channels)} の読み上げを開始します。"
+            f"{_format_channels(profile.twitch_channels)} の読み上げを"
+            f"開始します{note}。"
         )
 
     @group.command(name="leave", description="ボイスチャンネルから退出します")
@@ -141,7 +204,8 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
         # 対象ユーザー・Twitch・VC・エンジン・キュー件数をまとめて表示
         lines = [
             f"対象: <@{profile.discord_user_id}>",
-            f"Twitch: {_format_channels(profile.twitch_channels)}",
+            f"Twitch: {_format_channels(profile.twitch_channels)}"
+            + ("（一時指定）" if speaker.channel_override else ""),
             f"VC: {vc.channel.mention if vc else '未接続'}",
             f"エンジン: {profile.voice.engine}",
             f"待機中: {speaker.queue_size} 件",
@@ -171,11 +235,7 @@ def _build_setting_command(bot: TwitchTTSBot) -> app_commands.Command:
     ) -> None:
         target = user or interaction.user
         # 他人の登録は Bot オーナーに限定する
-        is_other = target.id != interaction.user.id
-        if is_other and not await bot.is_owner(interaction.user):
-            await interaction.response.send_message(
-                "他のユーザーの登録は Bot オーナーのみ行えます。", ephemeral=True
-            )
+        if not await _ensure_can_edit(bot, interaction, target):
             return
 
         # 入力を正規化（不正なら書き込み前に弾く）

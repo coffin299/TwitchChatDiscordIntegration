@@ -87,9 +87,11 @@ class TwitchTTSBot(discord.Client):
         # エンジン設定が変わったときだけ疎通確認する
         if check_engines:
             await self._check_engines()
-        # 稼働中セッションは最新のユーザー設定に差し替える
+        # 稼働中セッションは最新のユーザー設定に差し替える（一時指定は維持）
         for guild_id, speaker in list(self._sessions.items()):
-            profile = config.users.get(speaker.profile.discord_user_id)
+            profile = config.profile_for(
+                speaker.profile.discord_user_id, speaker.channel_override
+            )
             # 設定から消えたユーザーのセッションは終了して退出
             if profile is None:
                 await self.end_session(guild_id)
@@ -170,7 +172,12 @@ class TwitchTTSBot(discord.Client):
         """サーバーで稼働中の読み上げセッションを返す（無ければ None）。"""
         return self._sessions.get(guild_id) if guild_id is not None else None
 
-    def start_session(self, guild_id: int, profile: UserConfig) -> None:
+    def start_session(
+        self,
+        guild_id: int,
+        profile: UserConfig,
+        channel_override: tuple[str, ...] | None = None,
+    ) -> None:
         """サーバーで指定ユーザーの読み上げを開始する（既存は置き換え）。"""
         old = self._sessions.pop(guild_id, None)
         # 同じサーバーで別の人の読み上げ中なら止めてから切り替える
@@ -182,6 +189,7 @@ class TwitchTTSBot(discord.Client):
             self._engines,
             self._voice_client_getter(guild_id),
             self.config.ffmpeg_path,
+            channel_override,
         )
         speaker.start()
         self._sessions[guild_id] = speaker

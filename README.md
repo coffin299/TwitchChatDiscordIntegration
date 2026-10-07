@@ -116,7 +116,7 @@ python -B main.py
 
 | コマンド | 権限 | 内容 |
 | :--- | :--- | :--- |
-| `/tts join [user]` | 全員 | 実行者がいる VC に参加し、`user`（省略時は自分）の Twitch を読み上げ開始 |
+| `/tts join [user] [twitch] [save]` | 全員 | 実行者がいる VC に参加し、`user`（省略時は自分）の Twitch を読み上げ開始。`twitch` で未登録でもその場で指定可 |
 | `/tts leave` | 全員 | VC から退出し、待機中のコメントを破棄 |
 | `/tts skip` | 全員 | 再生中の読み上げを止め、待機中も全て破棄 |
 | `/tts status` | 全員 | 対象ユーザー・Twitch チャンネル・VC・エンジン・待機件数を表示 |
@@ -127,6 +127,21 @@ python -B main.py
 - 別々のサーバーなら、同時に別々の人の配信を読めます
 - 他の人の配信を読みたいときは `/tts join user:@その人`（その人が登録済みであること）
 - VC に人間がいなくなったら自動で退出します
+
+### `/tts join` の一時指定（登録不要）
+
+`twitch` を付けると、`config.yaml` に登録していなくてもその場で任意の Twitch チャンネルを読み上げます。
+
+| 例 | 動作 |
+| :--- | :--- |
+| `/tts join` | 自分の登録済み Twitch を読む |
+| `/tts join user:@A` | A の登録済み Twitch を読む |
+| `/tts join twitch:https://www.twitch.tv/xxx` | xxx を一時的に読む（未登録でも可） |
+| `/tts join user:@A twitch:xxx` | xxx を A の声・読み方設定で一時的に読む（A が未登録なら `defaults`） |
+| `/tts join user:@A twitch:xxx save:True` | A ⇔ xxx を `config.yaml` に登録してから読む（他人は Bot オーナーのみ） |
+
+- 一時指定は保存されません。`/tts leave` や Bot の再起動で消えます（`/tts_reload` では維持されます）
+- 声・読み方は、`user` が登録済みならその人の `voice` / `reading` / `viewer_voices`、未登録なら `defaults` を使います
 - VC に接続していない間のコメントは溜めずに捨てます（参加した瞬間に大量に読まれるのを防ぐため）
 
 ### `/tts_setting` の引数
@@ -162,7 +177,7 @@ python -B main.py
 | `ffmpeg_path` | `ffmpeg` | ffmpeg の実行ファイル |
 | `log_level` | `INFO` | `DEBUG` にすると読み上げ文もログに出る |
 | `engines` | （必須） | 音声合成エンジンの定義 |
-| `defaults` | | 全ユーザー共通の `voice` / `reading` 既定値 |
+| `defaults` | | 全ユーザー共通の `voice` / `reading` 既定値（未登録ユーザーの一時指定でも使用） |
 | `users` | 空 | Discord ユーザーごとの設定（`/tts_setting` で追加可） |
 
 ### `engines.<名前>`
@@ -254,7 +269,7 @@ tts_bot/
 | `No module named 'aiohttp'` など | 依存パッケージ未インストール。`start.bat` で起動するか、`.venv\Scripts\python.exe -m pip install -r requirements.txt` を実行 |
 | `/tts` コマンドが出ない | Bot 招待時に `applications.commands` スコープを付けたか確認。Discord クライアントを再起動（Ctrl+R）すると出ることがあります |
 | `Discord へのログインに失敗しました` / `401 Unauthorized` | トークンが不正です。Developer Portal → Bot → **Reset Token** で発行したものを `discord.token` に設定（Client Secret や Application ID ではありません）。環境変数 `DISCORD_TOKEN` を使う場合は値が正しいか確認 |
-| `/tts join` で「未登録」と出る | 先に `/tts_setting twitch:<URL>` で登録 |
+| `/tts join` で「未登録」と出る | `/tts join twitch:<URL>` で一時指定するか、`/tts_setting twitch:<URL>` で登録 |
 | `servers は廃止しました` エラー | 旧形式の設定です。`servers:` を `users:` にし、キーを Discord ユーザー ID に変更 |
 | `/tts_setting` で保存失敗 | Bot の実行ユーザーが `config.yaml` に書き込めるか、YAML が壊れていないか確認 |
 | VC に入るが無音 | ffmpeg のパス、エンジンの起動状態（起動ログの「接続OK」）を確認 |

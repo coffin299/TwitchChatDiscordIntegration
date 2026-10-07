@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +116,33 @@ class AppConfig:
     engines: dict[str, EngineConfig]
     # Discord ユーザー ID → 設定
     users: dict[int, UserConfig]
+    # 未登録ユーザー・一時指定で使う共通の声と読み上げ設定
+    default_voice: VoiceConfig
+    default_reading: ReadingConfig
+
+    def profile_for(
+        self, user_id: int, channels: tuple[str, ...] | None = None
+    ) -> UserConfig | None:
+        """読み上げに使うユーザー設定を返す。
+
+        channels 未指定なら登録済み設定（未登録は None）。
+        channels 指定時は、登録済みならその声・読み方、未登録なら
+        defaults を使い、Twitch チャンネルだけ差し替えた設定を返す。
+        """
+        registered = self.users.get(user_id)
+        # 一時指定なしなら登録内容そのもの
+        if channels is None:
+            return registered
+        # 未登録ユーザーは共通既定値で一時プロファイルを作る
+        if registered is None:
+            return UserConfig(
+                discord_user_id=user_id,
+                twitch_channels=channels,
+                voice=self.default_voice,
+                reading=self.default_reading,
+            )
+        # 登録済みなら声・読み方を活かしてチャンネルだけ差し替える
+        return replace(registered, twitch_channels=channels)
 
 
 def _expand_env(value: Any) -> Any:
@@ -366,4 +393,6 @@ def _parse_config(data: dict[str, Any], require_token: bool) -> AppConfig:
         users=_build_users(
             data.get("users"), engines, default_voice, default_reading
         ),
+        default_voice=_build_voice(default_voice, engines, "defaults.voice"),
+        default_reading=_build_reading(default_reading),
     )
