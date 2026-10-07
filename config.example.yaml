@@ -30,7 +30,7 @@ engines:
     timeout: 30
 
 # ------------------------------------------------------------
-# 全サーバー共通の既定値（各サーバーで個別に上書き可能）
+# 全ユーザー共通の既定値（各ユーザーで個別に上書き可能）
 # ------------------------------------------------------------
 defaults:
   voice:
@@ -58,36 +58,32 @@ defaults:
       草: くさ
 
 # ------------------------------------------------------------
-# Discord サーバー ID : Twitch チャンネル の対応表
-#   ・最小構成は「サーバーID: Twitchチャンネル名」の 1 行
+# Discord ユーザー ID : Twitch チャンネル の対応表
+#   ・サーバー ID の設定は不要。Bot がいるどのサーバーでも使えます
+#   ・登録した人が VC で /tts join すると、その人の Twitch コメントを読みます
+#   ・最小構成は「DiscordユーザーID: Twitchチャンネル名（または URL）」の 1 行
 #   ・Twitch チャンネルはリストで複数指定可（コラボ配信など）
-#   ・同じ Twitch チャンネルを複数サーバーで読むことも可
-#   ・Twitch は URL（https://www.twitch.tv/xxx）でも指定可
-#   ・Discord 上の /tts_setting で追加・変更すると、ここに自動で書き込まれ
+#   ・Discord 上の /tts_setting で登録すると、ここに自動で書き込まれ
 #     ホットリロードされます（手動編集後は /tts_reload）
 # ------------------------------------------------------------
-servers:
-  # 最小構成（/tts join で手動参加）
+users:
+  # 最小構成
   111111111111111111: streamer_a
+  222222222222222222: https://www.twitch.tv/streamer_b
 
   # 個別設定あり
-  222222222222222222:
-    twitch: streamer_b
-    voice_channel_id: 333333333333333333   # 起動時に自動参加する VC（任意）
+  333333333333333333:
+    twitch:
+      - streamer_c
+      - streamer_d
     voice:
       engine: coeiroink
       speaker_uuid: 3c37646f-3881-5374-2a83-149267990abc   # 例: つくよみちゃん
       style_id: 0
     reading:
       max_length: 50
-    # Twitch ユーザーごとに声を変える（サーバーの voice を上書き）
-    user_voices:
+    # Twitch 視聴者ごとに声を変える（この人の voice を上書き）
+    viewer_voices:
       friend_x:
         engine: voicevox
         speaker: 8
-
-  # 複数チャンネルを 1 つのサーバーで読む
-  444444444444444444:
-    twitch:
-      - streamer_a
-      - streamer_c

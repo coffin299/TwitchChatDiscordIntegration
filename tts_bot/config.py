@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import yaml
 
@@ -95,15 +95,15 @@ class ReadingConfig:
 
 
 @dataclass(frozen=True)
-class ServerConfig:
-    """Discord サーバー 1 つと Twitch チャンネルの対応設定。"""
+class UserConfig:
+    """Discord ユーザー 1 人と、その人の Twitch チャンネルの対応設定。"""
 
-    guild_id: int
+    discord_user_id: int
     twitch_channels: tuple[str, ...]
-    voice_channel_id: int | None
     voice: VoiceConfig
     reading: ReadingConfig
-    user_voices: dict[str, VoiceConfig] = field(default_factory=dict)
+    # Twitch 視聴者（ログイン名）ごとの声
+    viewer_voices: dict[str, VoiceConfig] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -114,7 +114,8 @@ class AppConfig:
     ffmpeg_path: str
     log_level: str
     engines: dict[str, EngineConfig]
-    servers: tuple[ServerConfig, ...]
+    # Discord ユーザー ID → 設定
+    users: dict[int, UserConfig]
 
 
 def _expand_env(value: Any) -> Any:
@@ -235,53 +236,32 @@ def _build_reading(merged: dict[str, Any]) -> ReadingConfig:
     )
 
 
-def _iter_server_entries(raw: Any) -> Iterator[tuple[Any, dict[str, Any]]]:
-    """servers セクションを (guild_id, 設定辞書) の組に展開する。
-
-    以下の 2 形式を受け付ける。
-    - マッピング形式: ``123456789: twitch_name`` または ``123456789: {...}``
-    - リスト形式: ``- guild_id: 123456789`` と ``twitch: ...`` を持つ要素
-    """
-    # 未定義（/tts_setting で後から登録する初期状態）は 0 件として扱う
-    if raw is None:
-        return
-    # マッピング形式（discord_id: twitch_id）
-    if isinstance(raw, dict):
-        for guild_id, body in raw.items():
-            # 値が文字列またはリストならチャンネル指定の省略記法とみなす
-            if isinstance(body, (str, list)):
-                body = {"twitch": body}
-            yield guild_id, _as_dict(body, f"servers.{guild_id}")
-        return
-    # リスト形式
-    if isinstance(raw, list):
-        for index, body in enumerate(raw):
-            body = _as_dict(body, f"servers[{index}]")
-            yield body.get("guild_id"), body
-        return
-    raise ConfigError("servers はマッピングまたはリストで指定してください")
-
-
-def _build_servers(
+def _build_users(
     raw: Any,
     engines: dict[str, EngineConfig],
     default_voice: dict[str, Any],
     default_reading: dict[str, Any],
-) -> tuple[ServerConfig, ...]:
-    """servers セクションから ServerConfig のタプルを構築する。"""
-    servers: list[ServerConfig] = []
-    seen: set[int] = set()
-    for raw_guild_id, body in _iter_server_entries(raw):
-        # guild_id は数値でなければならない
+) -> dict[int, UserConfig]:
+    """users セクション（``Discordユーザー ID: Twitch``）から設定を構築する。
+
+    値は ``twitch_name`` / ``[name1, name2]`` の省略形、
+    または ``{twitch: ..., voice: ..., reading: ..., viewer_voices: ...}``。
+    """
+    users: dict[int, UserConfig] = {}
+    # 未定義（/tts_setting で後から登録する初期状態）は 0 人として扱う
+    for raw_user_id, body in _as_dict(raw, "users").items():
+        # Discord のユーザー ID は数値でなければならない
         try:
-            guild_id = int(raw_guild_id)
+            user_id = int(raw_user_id)
         except (TypeError, ValueError) as exc:
-            raise ConfigError(f"guild_id '{raw_guild_id}' が数値ではありません") from exc
-        # 1 サーバーで同時に入れる VC は 1 つなので重複定義は禁止
-        if guild_id in seen:
-            raise ConfigError(f"guild_id {guild_id} が重複しています")
-        seen.add(guild_id)
-        where = f"servers.{guild_id}"
+            raise ConfigError(
+                f"users のキー '{raw_user_id}' が Discord ユーザー ID ではありません"
+            ) from exc
+        where = f"users.{user_id}"
+        # 値が文字列またはリストならチャンネル指定の省略記法とみなす
+        if isinstance(body, (str, list)):
+            body = {"twitch": body}
+        body = _as_dict(body, where)
 
         # twitch は文字列 1 つ、またはリストで複数指定可能
         twitch_raw = body.get("twitch")
@@ -294,7 +274,7 @@ def _build_servers(
             dict.fromkeys(normalize_channel(c) for c in twitch_raw)
         )
 
-        # 既定値 → サーバー個別設定の順でマージ
+        # 既定値 → ユーザー個別設定の順でマージ
         voice_dict = {
             **default_voice,
             **_as_dict(body.get("voice"), f"{where}.voice"),
@@ -304,29 +284,26 @@ def _build_servers(
             **_as_dict(body.get("reading"), f"{where}.reading"),
         }
 
-        # Twitch ユーザー別の声はサーバーの声をベースに上書き
-        user_voices: dict[str, VoiceConfig] = {}
-        raw_users = _as_dict(body.get("user_voices"), f"{where}.user_voices")
-        for login, override in raw_users.items():
-            user_where = f"{where}.user_voices.{login}"
-            override = _as_dict(override, user_where)
-            user_voices[str(login).lower()] = _build_voice(
-                {**voice_dict, **override}, engines, user_where
+        # Twitch 視聴者別の声はこのユーザーの声をベースに上書き
+        viewer_voices: dict[str, VoiceConfig] = {}
+        raw_viewers = _as_dict(
+            body.get("viewer_voices"), f"{where}.viewer_voices"
+        )
+        for login, override in raw_viewers.items():
+            viewer_where = f"{where}.viewer_voices.{login}"
+            override = _as_dict(override, viewer_where)
+            viewer_voices[str(login).lower()] = _build_voice(
+                {**voice_dict, **override}, engines, viewer_where
             )
 
-        # VC の自動参加先は任意
-        vc_id = body.get("voice_channel_id")
-        servers.append(
-            ServerConfig(
-                guild_id=guild_id,
-                twitch_channels=channels,
-                voice_channel_id=int(vc_id) if vc_id else None,
-                voice=_build_voice(voice_dict, engines, f"{where}.voice"),
-                reading=_build_reading(reading_dict),
-                user_voices=user_voices,
-            )
+        users[user_id] = UserConfig(
+            discord_user_id=user_id,
+            twitch_channels=channels,
+            voice=_build_voice(voice_dict, engines, f"{where}.voice"),
+            reading=_build_reading(reading_dict),
+            viewer_voices=viewer_voices,
         )
-    return tuple(servers)
+    return users
 
 
 def load_config(path: str | Path, require_token: bool = True) -> AppConfig:
@@ -360,6 +337,12 @@ def _parse_config(data: dict[str, Any], require_token: bool) -> AppConfig:
     if require_token and not token:
         raise ConfigError("discord.token（または環境変数 DISCORD_TOKEN）が未設定です")
 
+    # 旧形式（サーバー ID 基準）のまま使われていたら移行を促す
+    if data.get("servers"):
+        raise ConfigError(
+            "servers は廃止しました。users（Discordユーザー ID: Twitch）に"
+            "書き換えてください"
+        )
     engines = _build_engines(_as_dict(data.get("engines"), "engines"))
     defaults = _as_dict(data.get("defaults"), "defaults")
     # 組み込み既定値に defaults セクションを重ねる
@@ -377,7 +360,7 @@ def _parse_config(data: dict[str, Any], require_token: bool) -> AppConfig:
         ffmpeg_path=str(data.get("ffmpeg_path", "ffmpeg")),
         log_level=str(data.get("log_level", "INFO")).upper(),
         engines=engines,
-        servers=_build_servers(
-            data.get("servers"), engines, default_voice, default_reading
+        users=_build_users(
+            data.get("users"), engines, default_voice, default_reading
         ),
     )

@@ -3,7 +3,7 @@
 Twitch のチャットを **VOICEVOX / COEIROINK** で音声合成し、**Discord のボイスチャンネル**で読み上げる Bot です。
 
 配信PCに負荷をかけないよう、**サブPCで Bot と音声合成エンジンを常駐**させる構成を想定しています。
-1 つの Bot で複数の Discord サーバー（身内鯖）を同時に扱え、`Discord サーバーID : Twitch チャンネル` の対応を YAML で管理します。
+`Discord ユーザーID : Twitch チャンネル` の対応を YAML で管理し、登録した人が **どのサーバーの VC でも** `/tts join` するだけでその人の配信コメントを読み上げます。サーバー ID の設定は不要で、1 つの Bot で複数の身内鯖を同時に扱えます。
 
 ```
 [配信PC]  Discord に参加して聞くだけ（合成処理なし）
@@ -20,12 +20,13 @@ Twitch のチャットを **VOICEVOX / COEIROINK** で音声合成し、**Discor
 
 - Twitch チャットを匿名接続で受信（Twitch のトークン不要）
 - VOICEVOX 互換 API（VOICEVOX / COEIROINK v1 / SHAREVOX など）と COEIROINK v2 API に対応
-- 複数 Discord サーバーを 1 プロセスで運用
-  - 1 サーバーで複数 Twitch チャンネルを読む / 1 チャンネルを複数サーバーで読む、どちらも可
-- サーバーごと・Twitch ユーザーごとに話者・話速などを変更
+- Discord ユーザー単位で Twitch を登録（サーバー ID 不要）
+  - 複数サーバーで同時に別々の人の配信を読める / 同じ配信を複数サーバーで読むことも可
+  - 1 人に複数 Twitch チャンネルを登録可（コラボ配信など）
+- ユーザーごと・Twitch 視聴者ごとに話者・話速などを変更
 - エモート除去、URL 省略、長文省略、読み替え辞書、無視ユーザー、コマンド（`!` 始まり）無視
-- 起動時に指定 VC へ自動参加（任意）
-- **`/tts_setting` で Discord から Twitch チャンネルを登録** → `config.yaml` に保存して即ホットリロード（再起動不要）
+- VC が無人になったら自動退出
+- **`/tts_setting` で自分の Twitch を登録** → `config.yaml` に保存して即ホットリロード（再起動不要）
 - スラッシュコマンド: `/tts join` `/tts leave` `/tts skip` `/tts status` `/tts_setting` `/tts_reload`
 
 ## 必要なもの（サブPC）
@@ -64,7 +65,7 @@ python -m venv .venv
 Copy-Item config.example.yaml config.yaml
 ```
 
-`config.yaml` を編集します。最小構成は以下だけです。`servers` は空のままでも起動でき、後から Discord 上の `/tts_setting` で登録できます。
+`config.yaml` を編集します。最小構成は以下だけです。`users` は空のままでも起動でき、後から各自が Discord 上の `/tts_setting` で登録できます。
 
 ```yaml
 discord:
@@ -75,12 +76,12 @@ engines:
     type: voicevox
     url: http://127.0.0.1:50021
 
-servers:
-  111111111111111111: streamer_a    # DiscordサーバーID: Twitchチャンネル名
+users:
+  111111111111111111: streamer_a    # DiscordユーザーID: Twitchチャンネル名
   222222222222222222: https://www.twitch.tv/streamer_b   # URL でも可
 ```
 
-Discord のサーバー ID / チャンネル ID は、Discord の「開発者モード」を ON にして右クリック →「ID をコピー」で取得できます。
+Discord のユーザー ID は、Discord の「開発者モード」を ON にしてユーザーを右クリック →「ユーザーIDをコピー」で取得できます（`/tts_setting` を使えば ID を調べる必要はありません）。
 
 ### 4. 話者 ID を確認
 
@@ -108,41 +109,44 @@ python -B main.py
 
 ## 使い方
 
-1. （未登録なら）`/tts_setting twitch:https://www.twitch.tv/streamer_a` でこのサーバーと Twitch を紐付け
-2. 読み上げを聞きたい VC に入り、`/tts join` を実行（または `voice_channel_id` で自動参加）
-3. 対応する Twitch チャンネルのコメントが読み上げられます
-4. 配信PCでは Discord でその VC に参加していれば OK
+1. 初回だけ `/tts_setting twitch:https://www.twitch.tv/自分のチャンネル` で自分の Discord アカウントと Twitch を紐付け
+2. 配信するときに、どのサーバーでもいいので VC に入って `/tts join`
+3. 自分の Twitch チャンネルのコメントがその VC で読み上げられます
+4. 配信PCでは Discord でその VC に参加していれば OK（合成はサブPCが担当）
 
 | コマンド | 権限 | 内容 |
 | :--- | :--- | :--- |
-| `/tts join` | 全員 | 実行者がいる VC に参加（参加中なら移動） |
+| `/tts join [user]` | 全員 | 実行者がいる VC に参加し、`user`（省略時は自分）の Twitch を読み上げ開始 |
 | `/tts leave` | 全員 | VC から退出し、待機中のコメントを破棄 |
 | `/tts skip` | 全員 | 再生中の読み上げを止め、待機中も全て破棄 |
-| `/tts status` | 全員 | Twitch チャンネル・VC・エンジン・待機件数を表示 |
-| `/tts_setting` | サーバー管理 | Twitch チャンネルを登録・変更し、`config.yaml` に保存してホットリロード |
+| `/tts status` | 全員 | 対象ユーザー・Twitch チャンネル・VC・エンジン・待機件数を表示 |
+| `/tts_setting twitch [user]` | 全員 | 自分の Twitch を登録・変更し、`config.yaml` に保存してホットリロード |
 | `/tts_reload` | サーバー管理 | `config.yaml` を手動編集した後に再読み込み |
 
-VC に接続していない間のコメントは溜めずに捨てます（参加した瞬間に大量に読まれるのを防ぐため）。
+- 1 サーバーで同時に読めるのは 1 人分です。別の人が `/tts join` すると、その人の配信に切り替わります
+- 別々のサーバーなら、同時に別々の人の配信を読めます
+- 他の人の配信を読みたいときは `/tts join user:@その人`（その人が登録済みであること）
+- VC に人間がいなくなったら自動で退出します
+- VC に接続していない間のコメントは溜めずに捨てます（参加した瞬間に大量に読まれるのを防ぐため）
 
 ### `/tts_setting` の引数
 
 | 引数 | 必須 | 内容 |
 | :--- | :---: | :--- |
 | `twitch` | ✅ | Twitch の URL（`https://www.twitch.tv/xxx`）またはチャンネル名。カンマ・空白区切りで複数可 |
-| `voice_channel` | | 自動参加する VC。指定するとその場で参加し、次回起動時も自動参加 |
-| `guild_id` | | 対象の Discord サーバー ID。省略時は実行したサーバー。**他サーバーを指定できるのは Bot オーナーのみ** |
+| `user` | | 登録対象の Discord ユーザー。省略時は自分。**他人を登録できるのは Bot オーナーのみ** |
 
-- 既に登録済みのサーバーなら `twitch`（と指定時は `voice_channel_id`）だけを上書きし、`voice` などの個別設定は残します
+- 登録済みなら `twitch` だけを上書きし、`voice` などの個別設定は残します
 - `config.yaml` のコメントは保持されます。保存前に検証し、不正なら書き込みません
-- 実行できるのは「サーバー管理」権限を持つユーザーです（サーバー設定 → 連携サービス で変更可）
 
 ### ホットリロード
 
 `/tts_setting` 実行後、または `/tts_reload` で `config.yaml` を再読み込みし、Bot を再起動せずに反映します。
 
-- 反映されるもの: `servers` の追加・変更・削除、`engines`、`defaults`、`ffmpeg_path`
-- 削除されたサーバーは読み上げを止めて VC から退出します
-- Twitch の受信チャンネルが変わったときだけ IRC を再接続します
+- 反映されるもの: `users` の追加・変更・削除、`engines`、`defaults`、`ffmpeg_path`
+- 読み上げ中のユーザーの設定が変わった場合は、そのまま新しい設定で読み上げを続けます
+- 削除されたユーザーの読み上げは止めて VC から退出します
+- Twitch には読み上げ中のチャンネルだけ接続し、変化したときだけ IRC を再接続します
 - `discord.token` と `log_level` の変更は再起動が必要です
 - 再読み込みに失敗した場合は、それまでの設定のまま動き続けます
 
@@ -158,8 +162,8 @@ VC に接続していない間のコメントは溜めずに捨てます（参�
 | `ffmpeg_path` | `ffmpeg` | ffmpeg の実行ファイル |
 | `log_level` | `INFO` | `DEBUG` にすると読み上げ文もログに出る |
 | `engines` | （必須） | 音声合成エンジンの定義 |
-| `defaults` | | 全サーバー共通の `voice` / `reading` 既定値 |
-| `servers` | 空 | Discord サーバーごとの設定（`/tts_setting` で追加可） |
+| `defaults` | | 全ユーザー共通の `voice` / `reading` 既定値 |
+| `users` | 空 | Discord ユーザーごとの設定（`/tts_setting` で追加可） |
 
 ### `engines.<名前>`
 
@@ -169,31 +173,30 @@ VC に接続していない間のコメントは溜めずに捨てます（参�
 | `url` | エンジンの URL。VOICEVOX は既定で `:50021`、COEIROINK v2 は `:50032`、COEIROINK v1 は `:50031`（`type: voicevox` で接続） |
 | `timeout` | 合成リクエストのタイムアウト秒（既定 30） |
 
-### `servers`
+### `users`
 
-2 通りの書き方ができます。
+Discord ユーザー ID をキーにします。値は Twitch チャンネルだけの省略形か、詳細設定です。
 
 ```yaml
-# マッピング形式（推奨）: サーバーID をキーにする
-servers:
-  111111111111111111: streamer_a
-  222222222222222222:
-    twitch: [streamer_b, streamer_c]
-    voice_channel_id: 333333333333333333
-
-# リスト形式
-servers:
-  - guild_id: 111111111111111111
-    twitch: streamer_a
+users:
+  111111111111111111: streamer_a                  # 省略形
+  222222222222222222: [streamer_b, streamer_c]    # 複数チャンネル
+  333333333333333333:                             # 詳細設定
+    twitch: https://www.twitch.tv/streamer_d
+    voice:
+      speaker: 8
+    viewer_voices:
+      friend_x: { speaker: 2 }
 ```
 
 | キー | 説明 |
 | :--- | :--- |
 | `twitch` | Twitch チャンネル名（ログイン名）または URL。文字列またはリスト |
-| `voice_channel_id` | 起動時に自動参加する VC の ID（任意） |
-| `voice` | このサーバーの声（`defaults.voice` を上書き） |
-| `reading` | このサーバーの読み上げ設定（`defaults.reading` を上書き） |
-| `user_voices` | `Twitchログイン名: voice設定` で、ユーザーごとに声を変える |
+| `voice` | この人の配信を読むときの声（`defaults.voice` を上書き） |
+| `reading` | この人の配信の読み上げ設定（`defaults.reading` を上書き） |
+| `viewer_voices` | `Twitchログイン名: voice設定` で、視聴者ごとに声を変える |
+
+旧形式の `servers`（サーバー ID 基準）は廃止しました。残っているとエラーになるので `users` に書き換えてください。
 
 ### `voice`
 
@@ -235,12 +238,12 @@ start.bat               Windows 用起動スクリプト
 config.example.yaml     設定サンプル
 tts_bot/
   config.py             YAML 読み込み・検証
-  config_writer.py      config.yaml へのサーバー設定書き込み（コメント保持）
+  config_writer.py      config.yaml へのユーザー登録書き込み（コメント保持）
   twitch_irc.py         Twitch チャット受信（匿名 IRC）
   text_filter.py        読み上げテキスト整形
   tts_engines.py        VOICEVOX / COEIROINK API クライアント
-  guild_speaker.py      サーバーごとの読み上げキューと再生
-  bot.py                Discord Bot 本体・ホットリロード
+  guild_speaker.py      サーバーごとの読み上げセッション（キューと再生）
+  bot.py                Discord Bot 本体・セッション管理・ホットリロード
   commands.py           スラッシュコマンド
 ```
 
@@ -250,7 +253,8 @@ tts_bot/
 | :--- | :--- |
 | `No module named 'aiohttp'` など | 依存パッケージ未インストール。`start.bat` で起動するか、`.venv\Scripts\python.exe -m pip install -r requirements.txt` を実行 |
 | `/tts` コマンドが出ない | Bot 招待時に `applications.commands` スコープを付けたか確認。Discord クライアントを再起動（Ctrl+R）すると出ることがあります |
-| `/tts_setting` が出ない | 「サーバー管理」権限が必要です |
+| `/tts join` で「未登録」と出る | 先に `/tts_setting twitch:<URL>` で登録 |
+| `servers は廃止しました` エラー | 旧形式の設定です。`servers:` を `users:` にし、キーを Discord ユーザー ID に変更 |
 | `/tts_setting` で保存失敗 | Bot の実行ユーザーが `config.yaml` に書き込めるか、YAML が壊れていないか確認 |
 | VC に入るが無音 | ffmpeg のパス、エンジンの起動状態（起動ログの「接続OK」）を確認 |
 | `エンジン ... に接続できません` | エンジンの起動・URL・ポートを確認。後からエンジンを起動しても読み上げ時に再接続します |

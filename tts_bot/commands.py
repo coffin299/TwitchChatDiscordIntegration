@@ -31,6 +31,11 @@ def parse_channels(raw: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(normalize_channel(item) for item in items))
 
 
+def _format_channels(channels: tuple[str, ...]) -> str:
+    """チャンネル一覧を表示用の文字列にする。"""
+    return ", ".join(f"#{c}" for c in channels)
+
+
 def register_commands(bot: TwitchTTSBot) -> None:
     """全スラッシュコマンドを CommandTree に登録する。"""
     bot.tree.add_command(_build_tts_group(bot))
@@ -44,21 +49,38 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
         name="tts", description="Twitch コメント読み上げ", guild_only=True
     )
 
-    async def resolve(
+    async def require_session(
         interaction: discord.Interaction,
     ) -> GuildSpeaker | None:
-        """コマンド実行サーバーの読み上げ担当を取得し、無ければ通知する。"""
-        speaker = bot.speaker_for(interaction.guild_id)
+        """このサーバーの読み上げセッションを取得し、無ければ通知する。"""
+        speaker = bot.session_for(interaction.guild_id)
         if speaker is None:
             await interaction.response.send_message(
-                "このサーバーは未登録です。`/tts_setting` で Twitch を設定してください。",
+                "読み上げ中ではありません。`/tts join` で開始してください。",
                 ephemeral=True,
             )
         return speaker
 
-    @group.command(name="join", description="あなたがいるボイスチャンネルに参加します")
-    async def join(interaction: discord.Interaction) -> None:
-        if await resolve(interaction) is None:
+    @group.command(
+        name="join", description="あなたのいる VC で Twitch コメントを読み上げます"
+    )
+    @app_commands.describe(
+        user="誰の Twitch を読むか（省略時は自分）"
+    )
+    async def join(
+        interaction: discord.Interaction,
+        user: discord.Member | None = None,
+    ) -> None:
+        target = user or interaction.user
+        profile = bot.config.users.get(target.id)
+        # 読む対象の Twitch が未登録なら登録を案内
+        if profile is None:
+            who = "あなた" if target == interaction.user else target.mention
+            await interaction.response.send_message(
+                f"{who} の Twitch は未登録です。"
+                "`/tts_setting twitch:<URL>` で登録してください。",
+                ephemeral=True,
+            )
             return
         member = interaction.user
         # 実行者が VC にいなければ参加先が分からない
@@ -76,32 +98,31 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
             await vc.move_to(state.channel)
         else:
             await state.channel.connect(self_deaf=True)
+        # このサーバーで対象ユーザーの Twitch の読み上げを開始
+        bot.start_session(state.channel.guild.id, profile)
         await interaction.followup.send(
-            f"🔊 {state.channel.mention} で読み上げを開始します。"
+            f"🔊 {state.channel.mention} で "
+            f"{_format_channels(profile.twitch_channels)} の読み上げを開始します。"
         )
 
     @group.command(name="leave", description="ボイスチャンネルから退出します")
     async def leave(interaction: discord.Interaction) -> None:
-        speaker = await resolve(interaction)
-        if speaker is None:
-            return
+        # 退出前の接続状態を控えておく
         vc = interaction.guild.voice_client if interaction.guild else None
-        # 未接続なら何もしない
-        if vc is None:
+        # セッションが無くても VC に残っていれば退出させる
+        had_session = await bot.end_session(interaction.guild_id)
+        if not had_session and vc is None:
             await interaction.response.send_message(
                 "接続していません。", ephemeral=True
             )
             return
-        # 残りのキューを捨ててから切断
-        speaker.clear()
-        await vc.disconnect(force=False)
         await interaction.response.send_message("👋 退出しました。")
 
     @group.command(
         name="skip", description="再生中の読み上げを止め、待機中も全て破棄します"
     )
     async def skip(interaction: discord.Interaction) -> None:
-        speaker = await resolve(interaction)
+        speaker = await require_session(interaction)
         if speaker is None:
             return
         cleared = speaker.clear()
@@ -110,19 +131,19 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
             f"⏭ スキップしました（破棄 {cleared} 件）。"
         )
 
-    @group.command(name="status", description="このサーバーの読み上げ設定を表示します")
+    @group.command(name="status", description="このサーバーの読み上げ状況を表示します")
     async def status(interaction: discord.Interaction) -> None:
-        speaker = await resolve(interaction)
+        speaker = await require_session(interaction)
         if speaker is None:
             return
-        server = speaker.server
+        profile = speaker.profile
         vc = interaction.guild.voice_client if interaction.guild else None
-        channels = ", ".join(f"#{c}" for c in server.twitch_channels)
-        # VC 接続先・Twitch チャンネル・エンジン・キュー件数をまとめて表示
+        # 対象ユーザー・Twitch・VC・エンジン・キュー件数をまとめて表示
         lines = [
-            f"Twitch: {channels}",
+            f"対象: <@{profile.discord_user_id}>",
+            f"Twitch: {_format_channels(profile.twitch_channels)}",
             f"VC: {vc.channel.mention if vc else '未接続'}",
-            f"エンジン: {server.voice.engine}",
+            f"エンジン: {profile.voice.engine}",
             f"待機中: {speaker.queue_size} 件",
         ]
         await interaction.response.send_message(
@@ -133,48 +154,27 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
 
 
 def _build_setting_command(bot: TwitchTTSBot) -> app_commands.Command:
-    """/tts_setting（config.yaml への登録＋ホットリロード）を作る。"""
+    """/tts_setting（Discord ユーザー ⇔ Twitch の登録＋ホットリロード）を作る。"""
 
     @app_commands.command(
         name="tts_setting",
-        description="Discord サーバーと Twitch チャンネルの対応を登録します",
+        description="あなたの Discord アカウントと Twitch チャンネルを紐付けます",
     )
     @app_commands.describe(
         twitch="Twitch の URL またはチャンネル名（カンマ区切りで複数可）",
-        voice_channel="起動時・登録時に自動参加する VC（任意）",
-        guild_id="対象の Discord サーバー ID（省略時はこのサーバー）",
+        user="登録対象の Discord ユーザー（省略時は自分。他人は Bot オーナーのみ）",
     )
-    @app_commands.guild_only()
-    @app_commands.default_permissions(manage_guild=True)
     async def tts_setting(
         interaction: discord.Interaction,
         twitch: str,
-        voice_channel: discord.VoiceChannel | None = None,
-        guild_id: str | None = None,
+        user: discord.User | None = None,
     ) -> None:
-        # 対象サーバー ID を決定（省略時は実行サーバー）
-        target_id = interaction.guild_id
-        if guild_id:
-            # Discord の ID は数字のみ
-            if not guild_id.strip().isdigit():
-                await interaction.response.send_message(
-                    "guild_id は数字で入力してください。", ephemeral=True
-                )
-                return
-            target_id = int(guild_id)
-
-        # 他サーバーの設定変更は Bot オーナーに限定する
-        is_other_guild = target_id != interaction.guild_id
-        if is_other_guild and not await bot.is_owner(interaction.user):
+        target = user or interaction.user
+        # 他人の登録は Bot オーナーに限定する
+        is_other = target.id != interaction.user.id
+        if is_other and not await bot.is_owner(interaction.user):
             await interaction.response.send_message(
-                "他サーバーの設定は Bot オーナーのみ変更できます。", ephemeral=True
-            )
-            return
-        # VC 選択肢は実行サーバーのものなので、他サーバー指定とは併用不可
-        if is_other_guild and voice_channel is not None:
-            await interaction.response.send_message(
-                "他サーバー指定時は voice_channel を指定できません。",
-                ephemeral=True,
+                "他のユーザーの登録は Bot オーナーのみ行えます。", ephemeral=True
             )
             return
 
@@ -185,29 +185,20 @@ def _build_setting_command(bot: TwitchTTSBot) -> app_commands.Command:
             await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
             return
 
-        # ファイル書き込み・リロード・VC 参加で時間がかかるため応答を保留
+        # ファイル書き込み・リロードで時間がかかるため応答を保留
         await interaction.response.defer(ephemeral=True)
-        vc_id = voice_channel.id if voice_channel else None
         try:
-            await bot.save_server_setting(target_id, channels, vc_id)
+            await bot.save_user_setting(target.id, channels)
         except (ConfigError, OSError) as exc:
             log.warning("tts_setting に失敗: %s", exc)
             await interaction.followup.send(f"❌ 保存に失敗しました: {exc}")
             return
 
-        # 結果を表示（未参加なら /tts join を案内）
-        names = ", ".join(f"#{c}" for c in channels)
-        lines = [
-            "✅ config.yaml に保存し、ホットリロードしました。",
-            f"Discord: `{target_id}` ⇔ Twitch: {names}",
-        ]
-        if voice_channel is not None:
-            lines.append(f"自動参加 VC: {voice_channel.mention}")
-        elif bot.get_guild(target_id) is None:
-            lines.append("⚠ Bot はまだこのサーバーに参加していません。")
-        else:
-            lines.append("VC で `/tts join` すると読み上げを開始します。")
-        await interaction.followup.send("\n".join(lines))
+        await interaction.followup.send(
+            "✅ config.yaml に保存し、ホットリロードしました。\n"
+            f"{target.mention} ⇔ Twitch: {_format_channels(channels)}\n"
+            "VC に入って `/tts join` すると読み上げを開始します。"
+        )
 
     return tts_setting
 
@@ -218,7 +209,6 @@ def _build_reload_command(bot: TwitchTTSBot) -> app_commands.Command:
     @app_commands.command(
         name="tts_reload", description="config.yaml を再読み込みします"
     )
-    @app_commands.guild_only()
     @app_commands.default_permissions(manage_guild=True)
     async def tts_reload(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -231,7 +221,7 @@ def _build_reload_command(bot: TwitchTTSBot) -> app_commands.Command:
             )
             return
         await interaction.followup.send(
-            f"✅ 再読み込みしました（{len(config.servers)} サーバー）。"
+            f"✅ 再読み込みしました（{len(config.users)} ユーザー）。"
         )
 
     return tts_reload
