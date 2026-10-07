@@ -1,0 +1,10 @@
+# 秘密情報を含む実設定
+config.yaml
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+config.yaml.tmp

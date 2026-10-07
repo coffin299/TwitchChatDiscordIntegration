@@ -1,0 +1,93 @@
+# ============================================================
+# Twitch コメント読み上げ Bot 設定ファイル
+#   このファイルを config.yaml にコピーして編集してください。
+#   ${VAR} と書くと環境変数の値に置き換わります。
+# ============================================================
+
+discord:
+  # Discord Bot のトークン（直書きも可。未設定なら環境変数 DISCORD_TOKEN を参照）
+  token: ${DISCORD_TOKEN}
+
+# ffmpeg の実行ファイル（PATH が通っていれば "ffmpeg" のままで OK）
+ffmpeg_path: ffmpeg
+
+# ログレベル: DEBUG / INFO / WARNING / ERROR
+log_level: INFO
+
+# ------------------------------------------------------------
+# 音声合成エンジン（サブPCで起動しておく）
+#   type: voicevox  … VOICEVOX / COEIROINK v1 / SHAREVOX など VOICEVOX 互換 API
+#   type: coeiroink … COEIROINK v2 の API
+#   話者 ID は `python -B main.py --list-speakers` で確認できます。
+# ------------------------------------------------------------
+engines:
+  voicevox:
+    type: voicevox
+    url: http://127.0.0.1:50021
+  coeiroink:
+    type: coeiroink
+    url: http://127.0.0.1:50032
+    timeout: 30
+
+# ------------------------------------------------------------
+# 全サーバー共通の既定値（各サーバーで個別に上書き可能）
+# ------------------------------------------------------------
+defaults:
+  voice:
+    engine: voicevox   # 使うエンジン名（engines のキー）
+    speaker: 3         # VOICEVOX の話者（スタイル）ID
+    speed: 1.2         # 話速
+    pitch: 0.0         # 音高
+    intonation: 1.0    # 抑揚
+    volume: 1.0        # 音量
+  reading:
+    format: "{name}、{message}"   # 読み上げ書式
+    read_name: true               # false で本文のみ読む
+    max_length: 80                # これより長い本文は省略
+    truncate_suffix: "、以下略"
+    url_replacement: "URL省略"
+    strip_emotes: true            # Twitch エモートを読まない
+    max_queue: 20                 # 溜められる未再生コメント数（超過分は破棄）
+    ignore_users:                 # 読まない Twitch ユーザー（Bot など）
+      - nightbot
+      - streamelements
+    ignore_prefixes:              # この文字で始まるコメントは読まない
+      - "!"
+    dictionary:                   # 読み替え辞書（単純な文字列置換）
+      "8888": ぱちぱち
+      草: くさ
+
+# ------------------------------------------------------------
+# Discord サーバー ID : Twitch チャンネル の対応表
+#   ・最小構成は「サーバーID: Twitchチャンネル名」の 1 行
+#   ・Twitch チャンネルはリストで複数指定可（コラボ配信など）
+#   ・同じ Twitch チャンネルを複数サーバーで読むことも可
+#   ・Twitch は URL（https://www.twitch.tv/xxx）でも指定可
+#   ・Discord 上の /tts_setting で追加・変更すると、ここに自動で書き込まれ
+#     ホットリロードされます（手動編集後は /tts_reload）
+# ------------------------------------------------------------
+servers:
+  # 最小構成（/tts join で手動参加）
+  111111111111111111: streamer_a
+
+  # 個別設定あり
+  222222222222222222:
+    twitch: streamer_b
+    voice_channel_id: 333333333333333333   # 起動時に自動参加する VC（任意）
+    voice:
+      engine: coeiroink
+      speaker_uuid: 3c37646f-3881-5374-2a83-149267990abc   # 例: つくよみちゃん
+      style_id: 0
+    reading:
+      max_length: 50
+    # Twitch ユーザーごとに声を変える（サーバーの voice を上書き）
+    user_voices:
+      friend_x:
+        engine: voicevox
+        speaker: 8
+
+  # 複数チャンネルを 1 つのサーバーで読む
+  444444444444444444:
+    twitch:
+      - streamer_a
+      - streamer_c
