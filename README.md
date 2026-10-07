@@ -253,6 +253,7 @@ tts_bot/
 | :--- | :--- |
 | `No module named 'aiohttp'` など | 依存パッケージ未インストール。`start.bat` で起動するか、`.venv\Scripts\python.exe -m pip install -r requirements.txt` を実行 |
 | `/tts` コマンドが出ない | Bot 招待時に `applications.commands` スコープを付けたか確認。Discord クライアントを再起動（Ctrl+R）すると出ることがあります |
+| `Discord へのログインに失敗しました` / `401 Unauthorized` | トークンが不正です。Developer Portal → Bot → **Reset Token** で発行したものを `discord.token` に設定（Client Secret や Application ID ではありません）。環境変数 `DISCORD_TOKEN` を使う場合は値が正しいか確認 |
 | `/tts join` で「未登録」と出る | 先に `/tts_setting twitch:<URL>` で登録 |
 | `servers は廃止しました` エラー | 旧形式の設定です。`servers:` を `users:` にし、キーを Discord ユーザー ID に変更 |
 | `/tts_setting` で保存失敗 | Bot の実行ユーザーが `config.yaml` に書き込めるか、YAML が壊れていないか確認 |

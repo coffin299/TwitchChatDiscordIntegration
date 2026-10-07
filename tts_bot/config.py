@@ -334,6 +334,9 @@ def _parse_config(data: dict[str, Any], require_token: bool) -> AppConfig:
     discord_section = _as_dict(data.get("discord"), "discord")
     # トークンは YAML → 環境変数 DISCORD_TOKEN の順で探す
     token = discord_section.get("token") or os.environ.get("DISCORD_TOKEN", "")
+    # コピペ時に混入しがちな空白・クォート・"Bot " 接頭辞を取り除く
+    token = str(token).strip().strip("\"'").strip()
+    token = token.removeprefix("Bot ").strip()
     if require_token and not token:
         raise ConfigError("discord.token（または環境変数 DISCORD_TOKEN）が未設定です")
 

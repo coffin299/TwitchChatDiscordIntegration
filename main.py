@@ -18,10 +18,21 @@ import asyncio  # noqa: E402
 import logging  # noqa: E402
 
 import aiohttp  # noqa: E402
+import discord  # noqa: E402
 
 from tts_bot.bot import TwitchTTSBot  # noqa: E402
 from tts_bot.config import AppConfig, ConfigError, load_config  # noqa: E402
 from tts_bot.tts_engines import TTSError, create_engines  # noqa: E402
+
+
+# Discord ログイン失敗時に表示する対処法
+_LOGIN_FAILURE_HELP = """\
+Discord へのログインに失敗しました（トークンが不正です）。
+  1. Developer Portal → 対象アプリ → Bot → Reset Token で新しいトークンを発行
+     ※ OAuth2 の Client Secret / Application ID / Public Key ではありません
+  2. config.yaml の discord.token に貼り付ける（または環境変数 DISCORD_TOKEN）
+     ※ ${DISCORD_TOKEN} のままなら環境変数側が古い・誤っている可能性があります
+  3. トークンを Discord や GitHub に貼るとすぐ無効化されます。再発行してください"""
 
 
 async def list_speakers(config: AppConfig) -> None:
@@ -63,8 +74,13 @@ def main() -> int:
     level = getattr(logging, config.log_level, logging.INFO)
     # 設定ファイルのパスは /tts_setting の書き込み・ホットリロードで使う
     bot = TwitchTTSBot(config, args.config)
-    # root_logger=True で本 Bot 自身のログも discord.py の書式で標準出力へ出す
-    bot.run(config.discord_token, log_level=level, root_logger=True)
+    try:
+        # root_logger=True で本 Bot 自身のログも discord.py の書式で標準出力へ出す
+        bot.run(config.discord_token, log_level=level, root_logger=True)
+    except discord.LoginFailure:
+        # トークン誤りはスタックトレースではなく対処法を表示
+        print(_LOGIN_FAILURE_HELP, file=sys.stderr)
+        return 1
     return 0
 
 
