@@ -51,8 +51,20 @@ class TTSEngine(ABC):
         """テキストを WAV バイト列に変換する。"""
 
     @abstractmethod
+    async def voice_catalog(self) -> dict[tuple[Any, ...], str]:
+        """インストール済み話者の {識別キー: 設定記述用の文字列} を返す。"""
+
+    @abstractmethod
+    def voice_key(self, voice: VoiceConfig) -> tuple[Any, ...]:
+        """voice_catalog のキーと照合するための識別キーを返す。"""
+
     async def list_speakers(self) -> list[str]:
         """設定ファイルに書くための話者一覧（人間向け文字列）を返す。"""
+        return list((await self.voice_catalog()).values())
+
+    async def is_voice_installed(self, voice: VoiceConfig) -> bool:
+        """設定された話者・スタイルがエンジンに存在するか確認する。"""
+        return self.voice_key(voice) in await self.voice_catalog()
 
 
 class VoicevoxEngine(TTSEngine):
@@ -74,14 +86,17 @@ class VoicevoxEngine(TTSEngine):
             "POST", "/synthesis", params=params, json=query
         )
 
-    async def list_speakers(self) -> list[str]:
+    async def voice_catalog(self) -> dict[tuple[Any, ...], str]:
         speakers = await self._request("GET", "/speakers")
-        # スタイルごとに "話者名（スタイル名）: speaker: ID" の形で列挙
-        return [
-            f"{sp['name']}（{st['name']}）  speaker: {st['id']}"
+        # スタイル ID ごとに "話者名（スタイル名）  speaker: ID" を対応付け
+        return {
+            (st["id"],): f"{sp['name']}（{st['name']}）  speaker: {st['id']}"
             for sp in speakers
             for st in sp.get("styles", [])
-        ]
+        }
+
+    def voice_key(self, voice: VoiceConfig) -> tuple[Any, ...]:
+        return (voice.speaker,)
 
 
 class CoeiroinkEngine(TTSEngine):
@@ -108,15 +123,20 @@ class CoeiroinkEngine(TTSEngine):
         }
         return await self._request("POST", "/v1/synthesis", json=body)
 
-    async def list_speakers(self) -> list[str]:
+    async def voice_catalog(self) -> dict[tuple[Any, ...], str]:
         speakers = await self._request("GET", "/v1/speakers")
-        # スタイルごとに UUID と styleId を列挙
-        return [
-            f"{sp['speakerName']}（{st['styleName']}）  "
-            f"speaker_uuid: {sp['speakerUuid']}  style_id: {st['styleId']}"
+        # (UUID, styleId) ごとに設定記述用の文字列を対応付け
+        return {
+            (sp["speakerUuid"], st["styleId"]): (
+                f"{sp['speakerName']}（{st['styleName']}）  "
+                f"speaker_uuid: {sp['speakerUuid']}  style_id: {st['styleId']}"
+            )
             for sp in speakers
             for st in sp.get("styles", [])
-        ]
+        }
+
+    def voice_key(self, voice: VoiceConfig) -> tuple[Any, ...]:
+        return (voice.speaker_uuid, voice.style_id)
 
 
 # エンジン種別とクラスの対応表

@@ -13,7 +13,7 @@ import discord
 from discord import app_commands
 
 from .commands import register_commands
-from .config import AppConfig, UserConfig, load_config
+from .config import AppConfig, UserConfig, VoiceConfig, load_config
 from .config_writer import upsert_user
 from .guild_speaker import GuildSpeaker
 from .tts_engines import TTSEngine, TTSError, create_engines
@@ -76,17 +76,14 @@ class TwitchTTSBot(discord.Client):
         """ログイン後・接続前の初期化処理。"""
         self._http = aiohttp.ClientSession()
         register_commands(self)
-        await self._apply_config(self.config, check_engines=True)
+        await self._apply_config(self.config)
 
-    async def _apply_config(
-        self, config: AppConfig, check_engines: bool
-    ) -> None:
+    async def _apply_config(self, config: AppConfig) -> None:
         """設定をエンジン・稼働中セッションへ反映する（起動時・リロード時共通）。"""
         self.config = config
         self._engines = create_engines(config.engines, self._http)
-        # エンジン設定が変わったときだけ疎通確認する
-        if check_engines:
-            await self._check_engines()
+        # 疎通と話者の有無を確認（話者設定の変更も検出するため毎回行う）
+        await self._check_engines()
         # 稼働中セッションは最新のユーザー設定に差し替える（一時指定は維持）
         for guild_id, speaker in list(self._sessions.items()):
             profile = config.profile_for(
@@ -127,25 +124,46 @@ class TwitchTTSBot(discord.Client):
         twitch = TwitchChatClient(sorted(channels), self._on_twitch_message)
         self._twitch_task = asyncio.create_task(twitch.run_forever())
 
+    def _configured_voices(self) -> list[tuple[str, VoiceConfig]]:
+        """設定内の全ての声を (設定箇所, 声) の一覧にする。"""
+        voices = [("defaults.voice", self.config.default_voice)]
+        for user_id, user in self.config.users.items():
+            voices.append((f"users.{user_id}.voice", user.voice))
+            # 視聴者別の声も検査対象にする
+            voices.extend(
+                (f"users.{user_id}.viewer_voices.{login}", voice)
+                for login, voice in user.viewer_voices.items()
+            )
+        return voices
+
     async def _check_engines(self) -> None:
-        """各エンジンへ疎通確認し、結果をログに出す。"""
+        """各エンジンへ疎通確認し、設定された話者の有無もログに出す。"""
+        voices = self._configured_voices()
         for name, engine in self._engines.items():
             try:
-                count = len(await engine.list_speakers())
-                log.info(
-                    "エンジン %s (%s) 接続OK: %d スタイル",
-                    name, engine.config.url, count,
-                )
+                catalog = await engine.voice_catalog()
             except TTSError as exc:
                 # 起動は止めず、後から起動されたエンジンにも対応できるようにする
                 log.warning("エンジン %s に接続できません: %s", name, exc)
+                continue
+            log.info(
+                "エンジン %s (%s) 接続OK: %d スタイル",
+                name, engine.config.url, len(catalog),
+            )
+            # このエンジンを使う声のうち、未インストールの話者を警告
+            for where, voice in voices:
+                key = engine.voice_key(voice)
+                if voice.engine == name and key not in catalog:
+                    log.warning(
+                        "%s の話者 %s がエンジン %s にありません"
+                        "（--list-speakers で確認）",
+                        where, key, name,
+                    )
 
     async def _hot_reload_locked(self) -> AppConfig:
         """設定ファイルを読み直して反映する（呼び出し側でロック取得済み）。"""
         config = await asyncio.to_thread(load_config, self.config_path)
-        # エンジン定義に変更があるときだけ疎通確認する
-        changed = config.engines != self.config.engines
-        await self._apply_config(config, check_engines=changed)
+        await self._apply_config(config)
         log.info("設定をホットリロードしました（%d ユーザー）", len(config.users))
         return config
 
@@ -241,10 +259,13 @@ class TwitchTTSBot(discord.Client):
     ) -> None:
         """Bot の切断や、VC に人がいなくなったときにセッションを片付ける。"""
         guild_id = member.guild.id
-        # Bot 自身が VC から外された（キック等）ならセッションだけ終了
         if self.user is not None and member.id == self.user.id:
+            # Bot 自身が VC から外された（キック等）ならセッションだけ終了
             if after.channel is None:
                 await self.end_session(guild_id, disconnect=False)
+            # 無人の VC へ移動させられた場合も退出
+            elif before.channel != after.channel:
+                await self._leave_if_alone(guild_id)
             return
         vc = self._voice_client_getter(guild_id)()
         # Bot のいる VC から誰かが抜けたときだけ判定する
@@ -252,10 +273,19 @@ class TwitchTTSBot(discord.Client):
             return
         if after.channel == vc.channel:
             return
-        # 人間が 1 人もいなくなったら退出
-        if not any(not m.bot for m in vc.channel.members):
-            log.info("VC %s が無人になったため退出します", vc.channel.name)
-            await self.end_session(guild_id)
+        await self._leave_if_alone(guild_id)
+
+    async def _leave_if_alone(self, guild_id: int) -> None:
+        """Bot のいる VC に Bot 以外が 1 人もいなければ退出する。"""
+        vc = self._voice_client_getter(guild_id)()
+        # 未接続なら何もしない
+        if vc is None:
+            return
+        # 他の Bot は人数に数えない
+        if any(not m.bot for m in vc.channel.members):
+            return
+        log.info("VC %s が無人になったため退出します", vc.channel.name)
+        await self.end_session(guild_id)
 
     def _on_twitch_message(self, message: ChatMessage) -> None:
         """Twitch のチャットを対応する全セッションへ配送する。"""

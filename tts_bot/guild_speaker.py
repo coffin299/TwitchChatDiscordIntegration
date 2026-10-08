@@ -121,13 +121,30 @@ class GuildSpeaker:
             finally:
                 self._queue.task_done()
 
+    @staticmethod
+    async def _voice_exists(engine: TTSEngine, voice: VoiceConfig) -> bool:
+        """話者の存在を確認する（確認自体に失敗したら存在扱い）。"""
+        try:
+            return await engine.is_voice_installed(voice)
+        except TTSError:
+            return True
+
     async def _speak(self, text: str, voice: VoiceConfig) -> None:
         """1 件分のテキストを合成して VC で再生し、再生完了まで待つ。"""
         engine = self._engines.get(voice.engine)
         # リロードでエンジンが削除された後の古いキューは捨てる
         if engine is None:
             return
-        wav = await engine.synthesize(text, voice)
+        try:
+            wav = await engine.synthesize(text, voice)
+        except TTSError as exc:
+            # 話者未インストールが原因なら分かりやすい理由に置き換える
+            if not await self._voice_exists(engine, voice):
+                raise TTSError(
+                    f"エンジン {voice.engine} に {engine.voice_key(voice)} の"
+                    "話者がありません（--list-speakers で確認）"
+                ) from exc
+            raise
         vc = self._get_voice_client()
         # 合成中に VC から切断されていたら再生しない
         if vc is None or not vc.is_connected():
