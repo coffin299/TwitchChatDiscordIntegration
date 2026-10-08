@@ -42,7 +42,7 @@ defaults:
     intonation: 1.0    # 抑揚
     volume: 1.0        # 音量
   reading:
-    format: "{name}、{message}"   # 読み上げ書式
+    format: "{name}、{message}"   # 読み上げ書式（{channel} で配信チャンネル名も読める）
     read_name: true               # false で本文のみ読む
     max_length: 80                # これより長い本文は省略
     truncate_suffix: "、以下略"

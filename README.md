@@ -27,7 +27,8 @@ Twitch のチャットを **VOICEVOX / COEIROINK** で音声合成し、**Discor
 - エモート除去、URL 省略、長文省略、読み替え辞書、無視ユーザー、コマンド（`!` 始まり）無視
 - VC が無人になったら自動退出
 - **`/tts_setting` で自分の Twitch を登録** → `config.yaml` に保存して即ホットリロード（再起動不要）
-- スラッシュコマンド: `/tts join` `/tts leave` `/tts skip` `/tts status` `/tts_setting` `/tts_reload`
+- **1 つの VC で複数配信者のコメントを同時に読み上げ**（配信者ごとに声・エンジンを分けられ、VOICEVOX と COEIROINK の混在も可）
+- スラッシュコマンド: `/tts join` `/tts stop` `/tts leave` `/tts skip` `/tts status` `/tts_setting` `/tts_reload`
 
 ## 必要なもの（サブPC）
 
@@ -117,13 +118,19 @@ python -B main.py
 | コマンド | 権限 | 内容 |
 | :--- | :--- | :--- |
 | `/tts join [user] [twitch] [save]` | 全員 | 実行者がいる VC に参加し、`user`（省略時は自分）の Twitch を読み上げ開始。`twitch` で未登録でもその場で指定可 |
-| `/tts leave` | 全員 | VC から退出し、待機中のコメントを破棄 |
+| `/tts stop [user]` | 全員 | `user`（省略時は自分）の配信だけ読み上げを止める。最後の 1 人なら退出 |
+| `/tts leave` | 全員 | 全員分の読み上げを止めて VC から退出し、待機中のコメントを破棄 |
 | `/tts skip` | 全員 | 再生中の読み上げを止め、待機中も全て破棄 |
-| `/tts status` | 全員 | 対象ユーザー・Twitch チャンネル・VC・エンジン・待機件数を表示 |
+| `/tts status` | 全員 | VC・待機件数と、読み上げ中の配信者ごとの Twitch チャンネル・エンジンを表示 |
 | `/tts_setting twitch [user]` | 全員 | 自分の Twitch を登録・変更し、`config.yaml` に保存してホットリロード |
 | `/tts_reload` | サーバー管理 | `config.yaml` を手動編集した後に再読み込み |
 
-- 1 サーバーで同時に読めるのは 1 人分です。別の人が `/tts join` すると、その人の配信に切り替わります
+- **同じ VC に配信者が複数いる場合**は、それぞれが `/tts join` すると全員分の配信が読み上げ対象に追加されます（後から join しても前の人は外れません）
+  - コメントは、その配信者の `voice`（VOICEVOX / COEIROINK どちらでも可）と `reading` で読みます
+  - 再生は 1 本の待ち行列で順番に行います（声が重なることはありません）
+  - どの配信のコメントか分かるようにしたい場合は `format: "{channel}、{name}、{message}"` のように `{channel}` を使えます
+  - 自分の配信だけ止めたいときは `/tts stop`、全員分止めて退出するときは `/tts leave`
+- 1 サーバーで Bot が入れる VC は 1 つです。別の VC で `/tts join` すると Bot はそちらに移動します（読み上げ対象の配信者は維持）
 - 別々のサーバーなら、同時に別々の人の配信を読めます
 - 他の人の配信を読みたいときは `/tts join user:@その人`（その人が登録済みであること）
 - VC に Bot 以外が誰もいなくなったら自動で退出します（他の Bot は人数に数えません。無人の VC に移動させられた場合も退出）
@@ -140,7 +147,7 @@ python -B main.py
 | `/tts join user:@A twitch:xxx` | xxx を A の声・読み方設定で一時的に読む（A が未登録なら `defaults`） |
 | `/tts join user:@A twitch:xxx save:True` | A ⇔ xxx を `config.yaml` に登録してから読む（他人は Bot オーナーのみ） |
 
-- 一時指定は保存されません。`/tts leave` や Bot の再起動で消えます（`/tts_reload` では維持されます）
+- 一時指定は保存されません。`/tts stop` / `/tts leave` や Bot の再起動で消えます（`/tts_reload` では維持されます）
 - 声・読み方は、`user` が登録済みならその人の `voice` / `reading` / `viewer_voices`、未登録なら `defaults` を使います
 - VC に接続していない間のコメントは溜めずに捨てます（参加した瞬間に大量に読まれるのを防ぐため）
 
@@ -227,7 +234,7 @@ users:
 
 | キー | 既定値 | 説明 |
 | :--- | :--- | :--- |
-| `format` | `{name}、{message}` | 読み上げ書式 |
+| `format` | `{name}、{message}` | 読み上げ書式。`{name}` 投稿者名 / `{message}` 本文 / `{channel}` 配信チャンネル名 |
 | `read_name` | `true` | `false` で本文のみ |
 | `max_length` | `80` | 本文の最大文字数（`0` で無制限） |
 | `truncate_suffix` | `、以下略` | 省略時に付ける文字列 |

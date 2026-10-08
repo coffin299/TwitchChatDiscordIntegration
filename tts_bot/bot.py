@@ -15,7 +15,7 @@ from discord import app_commands
 from .commands import register_commands
 from .config import AppConfig, UserConfig, VoiceConfig, load_config
 from .config_writer import upsert_user
-from .guild_speaker import GuildSpeaker
+from .guild_speaker import GuildSpeaker, Listener
 from .tts_engines import TTSEngine, TTSError, create_engines
 from .twitch_irc import ChatMessage, TwitchChatClient
 
@@ -84,23 +84,30 @@ class TwitchTTSBot(discord.Client):
         self._engines = create_engines(config.engines, self._http)
         # 疎通と話者の有無を確認（話者設定の変更も検出するため毎回行う）
         await self._check_engines()
-        # 稼働中セッションは最新のユーザー設定に差し替える（一時指定は維持）
+        # 稼働中セッションの各配信者を最新設定に差し替える（一時指定は維持）
         for guild_id, speaker in list(self._sessions.items()):
-            profile = config.profile_for(
-                speaker.profile.discord_user_id, speaker.channel_override
-            )
-            # 設定から消えたユーザーのセッションは終了して退出
-            if profile is None:
+            speaker.update_engines(self._engines, config.ffmpeg_path)
+            for user_id, listener in list(speaker.listeners.items()):
+                profile = config.profile_for(
+                    user_id, listener.channel_override
+                )
+                # 設定から消えた配信者は外す
+                if profile is None:
+                    speaker.remove_listener(user_id)
+                    continue
+                speaker.set_listener(
+                    Listener(profile, listener.channel_override)
+                )
+            # 配信者が誰もいなくなったセッションは終了して退出
+            if not speaker.listeners:
                 await self.end_session(guild_id)
-                continue
-            speaker.update(profile, self._engines, config.ffmpeg_path)
         self._rebuild_routes()
 
     def _rebuild_routes(self) -> None:
         """稼働中セッションから Twitch チャンネル → 配送先の表を作り直す。"""
         routes: dict[str, list[GuildSpeaker]] = defaultdict(list)
         for speaker in self._sessions.values():
-            for channel in speaker.profile.twitch_channels:
+            for channel in speaker.channels:
                 routes[channel].append(speaker)
         self._routes = dict(routes)
         self._restart_twitch_if_needed()
@@ -190,28 +197,41 @@ class TwitchTTSBot(discord.Client):
         """サーバーで稼働中の読み上げセッションを返す（無ければ None）。"""
         return self._sessions.get(guild_id) if guild_id is not None else None
 
-    def start_session(
+    def add_listener(
         self,
         guild_id: int,
         profile: UserConfig,
         channel_override: tuple[str, ...] | None = None,
-    ) -> None:
-        """サーバーで指定ユーザーの読み上げを開始する（既存は置き換え）。"""
-        old = self._sessions.pop(guild_id, None)
-        # 同じサーバーで別の人の読み上げ中なら止めてから切り替える
-        if old is not None:
-            old.stop()
-        speaker = GuildSpeaker(
-            guild_id,
-            profile,
-            self._engines,
-            self._voice_client_getter(guild_id),
-            self.config.ffmpeg_path,
-            channel_override,
-        )
-        speaker.start()
-        self._sessions[guild_id] = speaker
+    ) -> GuildSpeaker:
+        """サーバーの読み上げ対象に配信者を追加する（他の配信者は維持）。"""
+        speaker = self._sessions.get(guild_id)
+        # セッションが無ければ新規作成して再生ワーカーを起動
+        if speaker is None:
+            speaker = GuildSpeaker(
+                guild_id,
+                self._engines,
+                self._voice_client_getter(guild_id),
+                self.config.ffmpeg_path,
+            )
+            speaker.start()
+            self._sessions[guild_id] = speaker
+        # 同じ人が再度 join した場合は設定を置き換える
+        speaker.set_listener(Listener(profile, channel_override))
         self._rebuild_routes()
+        return speaker
+
+    async def remove_listener(self, guild_id: int, user_id: int) -> bool:
+        """配信者を読み上げ対象から外す。誰もいなくなれば VC から退出する。"""
+        speaker = self._sessions.get(guild_id)
+        # セッションが無い、または対象が参加していなければ何もしない
+        if speaker is None or not speaker.remove_listener(user_id):
+            return False
+        # 最後の 1 人が抜けたらセッションごと終了
+        if not speaker.listeners:
+            await self.end_session(guild_id)
+        else:
+            self._rebuild_routes()
+        return True
 
     async def end_session(
         self, guild_id: int, disconnect: bool = True

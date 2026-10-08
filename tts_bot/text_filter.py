@@ -79,4 +79,7 @@ def build_speech_text(
         return body
     # 表示名にも辞書を適用してから書式に埋め込む
     name = apply_dictionary(message.display_name, reading.dictionary)
-    return reading.format.format(name=name, message=body)
+    # {channel} で配信チャンネル名も読める（複数配信者が同じ VC にいる場合向け）
+    return reading.format.format(
+        name=name, message=body, channel=message.channel
+    )

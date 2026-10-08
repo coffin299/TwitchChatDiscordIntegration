@@ -62,7 +62,7 @@ def register_commands(bot: TwitchTTSBot) -> None:
 
 
 def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
-    """/tts グループ（join / leave / skip / status）を作る。"""
+    """/tts グループ（join / stop / leave / skip / status）を作る。"""
     group = app_commands.Group(
         name="tts", description="Twitch コメント読み上げ", guild_only=True
     )
@@ -148,13 +148,14 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
             await interaction.followup.send("❌ ユーザー設定が見つかりません。")
             return
         vc = interaction.guild.voice_client if interaction.guild else None
-        # 既に接続中なら移動、未接続なら新規接続
+        # 既に同じ VC にいれば何もしない、別の VC なら移動、未接続なら接続
         if isinstance(vc, discord.VoiceClient):
-            await vc.move_to(state.channel)
+            if vc.channel != state.channel:
+                await vc.move_to(state.channel)
         else:
             await state.channel.connect(self_deaf=True)
-        # このサーバーで対象ユーザーの Twitch の読み上げを開始
-        bot.start_session(state.channel.guild.id, profile, override)
+        # 既存の配信者は残したまま、対象ユーザーの Twitch を読み上げに追加
+        speaker = bot.add_listener(state.channel.guild.id, profile, override)
         # 一時指定か登録済みかを表示
         if override is not None:
             note = "（一時指定）"
@@ -165,7 +166,35 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
         await interaction.followup.send(
             f"🔊 {state.channel.mention} で "
             f"{_format_channels(profile.twitch_channels)} の読み上げを"
-            f"開始します{note}。"
+            f"開始します{note}。（読み上げ中: {len(speaker.listeners)} 人）"
+        )
+
+    @group.command(
+        name="stop", description="指定した配信者の読み上げだけを止めます"
+    )
+    @app_commands.describe(user="止める配信者（省略時は自分）")
+    async def stop(
+        interaction: discord.Interaction,
+        user: discord.Member | None = None,
+    ) -> None:
+        target = user or interaction.user
+        removed = await bot.remove_listener(interaction.guild_id, target.id)
+        # 読み上げ対象に入っていなければ通知
+        if not removed:
+            await interaction.response.send_message(
+                f"{target.mention} の配信は読み上げていません。", ephemeral=True
+            )
+            return
+        speaker = bot.session_for(interaction.guild_id)
+        # 最後の 1 人だった場合は退出済み
+        if speaker is None:
+            await interaction.response.send_message(
+                f"⏹ {target.mention} の読み上げを止め、誰もいないため退出しました。"
+            )
+            return
+        await interaction.response.send_message(
+            f"⏹ {target.mention} の読み上げを止めました。"
+            f"（読み上げ中: {len(speaker.listeners)} 人）"
         )
 
     @group.command(name="leave", description="ボイスチャンネルから退出します")
@@ -199,17 +228,20 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
         speaker = await require_session(interaction)
         if speaker is None:
             return
-        profile = speaker.profile
         vc = interaction.guild.voice_client if interaction.guild else None
-        # 対象ユーザー・Twitch・VC・エンジン・キュー件数をまとめて表示
+        # VC・キュー件数に続けて、配信者ごとの Twitch とエンジンを表示
         lines = [
-            f"対象: <@{profile.discord_user_id}>",
-            f"Twitch: {_format_channels(profile.twitch_channels)}"
-            + ("（一時指定）" if speaker.channel_override else ""),
             f"VC: {vc.channel.mention if vc else '未接続'}",
-            f"エンジン: {profile.voice.engine}",
             f"待機中: {speaker.queue_size} 件",
+            f"読み上げ中の配信者: {len(speaker.listeners)} 人",
         ]
+        for user_id, listener in speaker.listeners.items():
+            profile = listener.profile
+            temporary = "（一時指定）" if listener.channel_override else ""
+            lines.append(
+                f"・<@{user_id}> {_format_channels(profile.twitch_channels)}"
+                f"{temporary} / エンジン: {profile.voice.engine}"
+            )
         await interaction.response.send_message(
             "\n".join(lines), ephemeral=True
         )

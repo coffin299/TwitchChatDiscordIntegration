@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+from dataclasses import dataclass
 from typing import Callable
 
 import discord
@@ -17,30 +18,37 @@ from .twitch_irc import ChatMessage
 log = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class Listener:
+    """セッションに参加している配信者 1 人分の読み上げ設定。"""
+
+    profile: UserConfig
+    # /tts join twitch:... で一時指定されたチャンネル（リロード後も維持）
+    channel_override: tuple[str, ...] | None = None
+
+
 class GuildSpeaker:
-    """1 つの Discord サーバーの VC で、1 人分の Twitch コメントを読み上げる。"""
+    """1 つの Discord サーバーの VC で、複数配信者の Twitch コメントを読み上げる。
+
+    配信者ごとに声・エンジン（VOICEVOX / COEIROINK 混在可）・読み方を持ち、
+    再生は 1 本のキューで順番に行う（VC の音声出力は 1 系統のため）。
+    """
 
     def __init__(
         self,
         guild_id: int,
-        profile: UserConfig,
         engines: dict[str, TTSEngine],
         get_voice_client: Callable[[], discord.VoiceClient | None],
         ffmpeg_path: str,
-        channel_override: tuple[str, ...] | None = None,
     ) -> None:
         self.guild_id = guild_id
-        # /tts join で指定された Discord ユーザーの設定
-        self.profile = profile
-        # /tts join twitch:... で一時指定されたチャンネル（リロード後も維持）
-        self.channel_override = channel_override
+        # Discord ユーザー ID → 配信者設定（参加順を維持）
+        self.listeners: dict[int, Listener] = {}
         self._engines = engines
         self._get_voice_client = get_voice_client
         self._ffmpeg_path = ffmpeg_path
-        # (読み上げテキスト, 声) を溜めるキュー（上限超過分は破棄）
-        self._queue: asyncio.Queue[tuple[str, VoiceConfig]] = asyncio.Queue(
-            maxsize=max(profile.reading.max_queue, 1)
-        )
+        # (読み上げテキスト, 声) を溜めるキュー（上限は配信者ごとに判定）
+        self._queue: asyncio.Queue[tuple[str, VoiceConfig]] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
 
     @property
@@ -48,19 +56,32 @@ class GuildSpeaker:
         """未再生のメッセージ数。"""
         return self._queue.qsize()
 
+    @property
+    def channels(self) -> frozenset[str]:
+        """このセッションで読み上げる全 Twitch チャンネル。"""
+        return frozenset(
+            channel
+            for listener in self.listeners.values()
+            for channel in listener.profile.twitch_channels
+        )
+
     def start(self) -> None:
         """再生ワーカーを起動する（多重起動はしない）。"""
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self._run())
 
-    def update(
-        self,
-        profile: UserConfig,
-        engines: dict[str, TTSEngine],
-        ffmpeg_path: str,
+    def set_listener(self, listener: Listener) -> None:
+        """配信者を追加する（同じ人が既にいれば設定を置き換える）。"""
+        self.listeners[listener.profile.discord_user_id] = listener
+
+    def remove_listener(self, user_id: int) -> bool:
+        """配信者を外す。外したら True。"""
+        return self.listeners.pop(user_id, None) is not None
+
+    def update_engines(
+        self, engines: dict[str, TTSEngine], ffmpeg_path: str
     ) -> None:
-        """ホットリロード時に設定を差し替える（キューと再生は継続）。"""
-        self.profile = profile
+        """ホットリロード時にエンジンと ffmpeg を差し替える。"""
         self._engines = engines
         self._ffmpeg_path = ffmpeg_path
 
@@ -71,24 +92,34 @@ class GuildSpeaker:
             self._worker.cancel()
             self._worker = None
 
+    def _profile_for_channel(self, channel: str) -> UserConfig | None:
+        """Twitch チャンネルを担当する配信者の設定を返す（先に参加した人優先）。"""
+        for listener in self.listeners.values():
+            if channel in listener.profile.twitch_channels:
+                return listener.profile
+        return None
+
     def handle_chat(self, message: ChatMessage) -> None:
-        """チャットを整形してキューへ積む。"""
+        """チャットを、そのチャンネルの配信者の設定で整形してキューへ積む。"""
         vc = self._get_voice_client()
         # VC 未接続中のコメントは溜めずに捨てる（接続時に大量再生されるのを防ぐ）
         if vc is None or not vc.is_connected():
             return
-        text = build_speech_text(message, self.profile.reading)
+        profile = self._profile_for_channel(message.channel)
+        # このセッションで読まないチャンネルなら無視
+        if profile is None:
+            return
+        text = build_speech_text(message, profile.reading)
         # 読み上げ対象外なら何もしない
         if text is None:
             return
-        # Twitch 視聴者別の声があれば優先
-        voice = self.profile.viewer_voices.get(
-            message.login, self.profile.voice
-        )
-        try:
-            self._queue.put_nowait((text, voice))
-        except asyncio.QueueFull:
+        # 配信者ごとのキュー上限を超えていたら破棄
+        if self._queue.qsize() >= max(profile.reading.max_queue, 1):
             log.warning("[%s] キューが満杯のため破棄: %s", self.guild_id, text)
+            return
+        # Twitch 視聴者別の声があれば優先、無ければ配信者の声
+        voice = profile.viewer_voices.get(message.login, profile.voice)
+        self._queue.put_nowait((text, voice))
 
     def clear(self) -> int:
         """未再生のキューを全て破棄し、破棄件数を返す。"""
