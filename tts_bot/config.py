@@ -119,6 +119,8 @@ class AppConfig:
     # 未登録ユーザー・一時指定で使う共通の声と読み上げ設定
     default_voice: VoiceConfig
     default_reading: ReadingConfig
+    # 配信開始時に、その人がいる VC へ自動参加するか
+    auto_join_on_stream: bool = True
 
     def profile_for(
         self, user_id: int, channels: tuple[str, ...] | None = None
@@ -384,6 +386,15 @@ def _parse_config(data: dict[str, Any], require_token: bool) -> AppConfig:
         **_DEFAULT_READING,
         **_as_dict(defaults.get("reading"), "defaults.reading"),
     }
+    # キーが無い既存の config.yaml は ON（配信開始で VC に自動参加）
+    if "auto_join_on_stream" not in data or data["auto_join_on_stream"] is None:
+        auto_join_on_stream = True
+    elif isinstance(data["auto_join_on_stream"], bool):
+        auto_join_on_stream = data["auto_join_on_stream"]
+    else:
+        raise ConfigError(
+            "auto_join_on_stream は true / false で指定してください"
+        )
 
     return AppConfig(
         discord_token=str(token),
@@ -395,4 +406,5 @@ def _parse_config(data: dict[str, Any], require_token: bool) -> AppConfig:
         ),
         default_voice=_build_voice(default_voice, engines, "defaults.voice"),
         default_reading=_build_reading(default_reading),
+        auto_join_on_stream=auto_join_on_stream,
     )

@@ -39,6 +39,34 @@ def _find_key(users: dict[Any, Any], user_id: int) -> Any:
     return None
 
 
+def _load_document(config_path: Path) -> tuple[YAML, dict[Any, Any]]:
+    """コメントを保ったまま YAML を読み込む。"""
+    yaml = _round_trip_yaml()
+    try:
+        with config_path.open(encoding="utf-8") as fp:
+            data = yaml.load(fp)
+    except YAMLError as exc:
+        raise ConfigError(f"{config_path} の YAML 構文エラー: {exc}") from exc
+    # 空ファイルやルートが辞書でない場合は編集できない
+    if not isinstance(data, dict):
+        raise ConfigError(f"{config_path} のルートがマッピングではありません")
+    return yaml, data
+
+
+def _save_document(config_path: Path, yaml: YAML, data: dict[Any, Any]) -> None:
+    """検証してから本体と置き換える。失敗時は元ファイルを残す。"""
+    tmp_path = config_path.with_name(config_path.name + ".tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as fp:
+            yaml.dump(data, fp)
+        load_config(tmp_path)
+        # 検証 OK なら本体と置き換える
+        os.replace(tmp_path, config_path)
+    finally:
+        # 検証失敗時に一時ファイルを残さない
+        tmp_path.unlink(missing_ok=True)
+
+
 def upsert_user(
     path: str | Path, user_id: int, channels: tuple[str, ...]
 ) -> None:
@@ -48,16 +76,7 @@ def upsert_user(
     検証に失敗した場合は元ファイルを変更せず ConfigError を送出する。
     """
     config_path = Path(path)
-    yaml = _round_trip_yaml()
-    # 元ファイルをコメント付きで読み込む（構文エラーは設定エラーとして扱う）
-    try:
-        with config_path.open(encoding="utf-8") as fp:
-            data = yaml.load(fp)
-    except YAMLError as exc:
-        raise ConfigError(f"{config_path} の YAML 構文エラー: {exc}") from exc
-    # 空ファイルやルートが辞書でない場合は編集できない
-    if not isinstance(data, dict):
-        raise ConfigError(f"{config_path} のルートがマッピングではありません")
+    yaml, data = _load_document(config_path)
 
     users = data.get("users")
     # users 未定義なら新規作成
@@ -75,14 +94,12 @@ def upsert_user(
         # 既存キーがあれば位置を保って置換、無ければ末尾に追加
         users[key if key is not None else user_id] = _twitch_value(channels)
 
-    # 一時ファイルに書き出して、設定として正しいか検証
-    tmp_path = config_path.with_name(config_path.name + ".tmp")
-    try:
-        with tmp_path.open("w", encoding="utf-8") as fp:
-            yaml.dump(data, fp)
-        load_config(tmp_path)
-        # 検証 OK なら本体と置き換える
-        os.replace(tmp_path, config_path)
-    finally:
-        # 検証失敗時に一時ファイルを残さない
-        tmp_path.unlink(missing_ok=True)
+    _save_document(config_path, yaml, data)
+
+
+def set_auto_join_on_stream(path: str | Path, enabled: bool) -> None:
+    """config.yaml の auto_join_on_stream を書き換える。"""
+    config_path = Path(path)
+    yaml, data = _load_document(config_path)
+    data["auto_join_on_stream"] = bool(enabled)
+    _save_document(config_path, yaml, data)

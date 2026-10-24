@@ -25,10 +25,12 @@ Twitch のチャットを **VOICEVOX / COEIROINK** で音声合成し、**Discor
   - 1 人に複数 Twitch チャンネルを登録可（コラボ配信など）
 - ユーザーごと・Twitch 視聴者ごとに話者・話速などを変更
 - エモート除去、URL 省略、長文省略、読み替え辞書、無視ユーザー、コマンド（`!` 始まり）無視
+- 英語は音声合成の直前にカタカナへ変換する（単語は読み、`GG` のような略語は文字読み。`www` はそのまま）
 - VC が無人になったら自動退出
+- **配信開始で VC へ自動参加**（既定 ON。同じ VC の登録配信者はまとめて読む）
 - **`/tts_setting` で自分の Twitch を登録** → `config.yaml` に保存して即ホットリロード（再起動不要）
 - **1 つの VC で複数配信者のコメントを同時に読み上げ**（配信者ごとに声・エンジンを分けられ、VOICEVOX と COEIROINK の混在も可）
-- スラッシュコマンド: `/tts join` `/tts stop` `/tts leave` `/tts skip` `/tts status` `/tts_setting` `/tts_reload`
+- スラッシュコマンド: `/tts join` `/tts stop` `/tts leave` `/tts skip` `/tts status` `/tts autojoin` `/tts_setting` `/tts_reload`
 
 ## 必要なもの（サブPC）
 
@@ -111,8 +113,8 @@ python -B main.py
 ## 使い方
 
 1. 初回だけ `/tts_setting twitch:https://www.twitch.tv/自分のチャンネル` で自分の Discord アカウントと Twitch を紐付け
-2. 配信するときに、どのサーバーでもいいので VC に入って `/tts join`
-3. 自分の Twitch チャンネルのコメントがその VC で読み上げられます
+2. VC に入って配信を開始する（先に配信を始めてから VC に入ってもよい）。Bot がその VC へ自動参加する
+3. 「名前さんのツイッチコメント読み上げを開始しました」と読んだあと、Twitch のコメントを読み上げる。同じ VC に登録配信者が複数いれば「AさんとBさんのツイッチコメント読み上げを開始しました」
 4. 配信PCでは Discord でその VC に参加していれば OK（合成はサブPCが担当）
 
 | コマンド | 権限 | 内容 |
@@ -122,6 +124,7 @@ python -B main.py
 | `/tts leave` | 全員 | 全員分の読み上げを止めて VC から退出し、待機中のコメントを破棄 |
 | `/tts skip` | 全員 | 再生中の読み上げを止め、待機中も全て破棄 |
 | `/tts status` | 全員 | VC・待機件数と、読み上げ中の配信者ごとの Twitch チャンネル・エンジンを表示 |
+| `/tts autojoin [enabled]` | 表示は全員、変更はサーバー管理 | 配信開始時の自動参加を表示・切り替え（全サーバー共通、`config.yaml` に保存） |
 | `/tts_setting twitch [user]` | 全員 | 自分の Twitch を登録・変更し、`config.yaml` に保存してホットリロード |
 | `/tts_reload` | サーバー管理 | `config.yaml` を手動編集した後に再読み込み |
 
@@ -134,6 +137,18 @@ python -B main.py
 - 別々のサーバーなら、同時に別々の人の配信を読めます
 - 他の人の配信を読みたいときは `/tts join user:@その人`（その人が登録済みであること）
 - VC に Bot 以外が誰もいなくなったら自動で退出します（他の Bot は人数に数えません。無人の VC に移動させられた場合も退出）
+
+### 配信開始時の自動参加
+
+`auto_join_on_stream`（省略時も **ON**）のとき、登録した人の Twitch が配信中で、その人がボイスチャンネルにいると、Bot がそこへ参加して読み上げを始めます。`/tts join` は今までどおり手動でも使えます。
+
+- テキストチャンネルには通知しません。代わりに VC で「nさんのツイッチコメント読み上げを開始しました」と読みます
+- 同じ VC に登録した配信者が複数いるときも参加します。読み上げ対象はそこにいる登録者全員で、アナウンスは「nさんとnさんのツイッチコメント読み上げを開始しました」です
+- 配信中の人が 1 人でもいれば参加します。先に VC に入ってから配信開始しても、配信中に VC へ入っても同じです
+- Bot が別の VC で読み上げ中のときは移動しません
+- `/tts stop` した人、`/tts leave` で止めた人は、その配信が終わるか VC を出るまで自動では戻りません
+- 状態の確認と切り替えは `/tts autojoin`（変更はサーバー管理者。設定は Bot 全体で 1 つです）
+- 配信中かどうかの確認に Twitch のトークンは不要です。確認できないときは自動参加だけ見送り、`/tts join` は使えます
 
 ### `/tts join` の一時指定（登録不要）
 
@@ -165,7 +180,7 @@ python -B main.py
 
 `/tts_setting` 実行後、または `/tts_reload` で `config.yaml` を再読み込みし、Bot を再起動せずに反映します。
 
-- 反映されるもの: `users` の追加・変更・削除、`engines`、`defaults`、`ffmpeg_path`
+- 反映されるもの: `users` の追加・変更・削除、`engines`、`defaults`、`ffmpeg_path`、`auto_join_on_stream`
 - 読み上げ中のユーザーの設定が変わった場合は、そのまま新しい設定で読み上げを続けます
 - 削除されたユーザーの読み上げは止めて VC から退出します
 - Twitch には読み上げ中のチャンネルだけ接続し、変化したときだけ IRC を再接続します
@@ -183,6 +198,7 @@ python -B main.py
 | `discord.token` | 環境変数 `DISCORD_TOKEN` | Bot トークン |
 | `ffmpeg_path` | `ffmpeg` | ffmpeg の実行ファイル |
 | `log_level` | `INFO` | `DEBUG` にすると読み上げ文もログに出る |
+| `auto_join_on_stream` | `true` | 配信開始時に、その人がいる VC へ自動参加する |
 | `engines` | （必須） | 音声合成エンジンの定義 |
 | `defaults` | | 全ユーザー共通の `voice` / `reading` 既定値（未登録ユーザーの一時指定でも使用） |
 | `users` | 空 | Discord ユーザーごとの設定（`/tts_setting` で追加可） |

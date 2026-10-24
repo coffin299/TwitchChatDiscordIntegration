@@ -147,15 +147,23 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
         if profile is None:
             await interaction.followup.send("❌ ユーザー設定が見つかりません。")
             return
-        vc = interaction.guild.voice_client if interaction.guild else None
-        # 既に同じ VC にいれば何もしない、別の VC なら移動、未接続なら接続
-        if isinstance(vc, discord.VoiceClient):
-            if vc.channel != state.channel:
-                await vc.move_to(state.channel)
-        else:
-            await state.channel.connect(self_deaf=True)
-        # 既存の配信者は残したまま、対象ユーザーの Twitch を読み上げに追加
-        speaker = bot.add_listener(state.channel.guild.id, profile, override)
+        # 接続完了はボイス状態イベントを待つので、セッション用ロックは取らない
+        async with bot.connect_lock:
+            vc = interaction.guild.voice_client if interaction.guild else None
+            # 既に同じ VC にいれば何もしない、別の VC なら移動、未接続なら接続
+            if isinstance(vc, discord.VoiceClient):
+                if vc.channel != state.channel:
+                    await vc.move_to(state.channel)
+            else:
+                await state.channel.connect(self_deaf=True)
+            async with bot.session_lock:
+                # 手動参加した人は、stop / leave で付けた自動参加の保留を解く
+                if interaction.guild_id is not None:
+                    bot.auto_join.unpause(interaction.guild_id, target.id)
+                # 既存の配信者は残したまま、対象ユーザーの Twitch を読み上げに追加
+                speaker = bot.add_listener(
+                    state.channel.guild.id, profile, override
+                )
         # 一時指定か登録済みかを表示
         if override is not None:
             note = "（一時指定）"
@@ -178,14 +186,20 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
         user: discord.Member | None = None,
     ) -> None:
         target = user or interaction.user
-        removed = await bot.remove_listener(interaction.guild_id, target.id)
+        guild_id = interaction.guild_id
+        if guild_id is None:
+            await interaction.response.send_message(
+                "サーバー内で実行してください。", ephemeral=True
+            )
+            return
+        # 止めた人は、その配信が終わるか VC を出るまで自動では戻さない
+        removed, speaker = await bot.stop_listener(guild_id, target.id)
         # 読み上げ対象に入っていなければ通知
         if not removed:
             await interaction.response.send_message(
                 f"{target.mention} の配信は読み上げていません。", ephemeral=True
             )
             return
-        speaker = bot.session_for(interaction.guild_id)
         # 最後の 1 人だった場合は退出済み
         if speaker is None:
             await interaction.response.send_message(
@@ -199,10 +213,16 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
 
     @group.command(name="leave", description="ボイスチャンネルから退出します")
     async def leave(interaction: discord.Interaction) -> None:
+        guild_id = interaction.guild_id
+        if guild_id is None:
+            await interaction.response.send_message(
+                "サーバー内で実行してください。", ephemeral=True
+            )
+            return
         # 退出前の接続状態を控えておく
         vc = interaction.guild.voice_client if interaction.guild else None
-        # セッションが無くても VC に残っていれば退出させる
-        had_session = await bot.end_session(interaction.guild_id)
+        # セッションが無くても VC に残っていれば退出させる。配信中の自動復帰は保留する
+        had_session = await bot.leave_guild(guild_id)
         if not had_session and vc is None:
             await interaction.response.send_message(
                 "接続していません。", ephemeral=True
@@ -246,6 +266,44 @@ def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
             "\n".join(lines), ephemeral=True
         )
 
+    @group.command(
+        name="autojoin",
+        description="配信開始時に VC へ自動参加するかを切り替えます",
+    )
+    @app_commands.describe(
+        enabled="true で ON、false で OFF（省略時は現在の状態）",
+    )
+    async def autojoin(
+        interaction: discord.Interaction,
+        enabled: bool | None = None,
+    ) -> None:
+        if enabled is None:
+            state = "ON" if bot.config.auto_join_on_stream else "OFF"
+            await interaction.response.send_message(
+                f"配信開始時の自動参加は {state} です。", ephemeral=True
+            )
+            return
+        member = interaction.user
+        is_admin = (
+            isinstance(member, discord.Member)
+            and member.guild_permissions.manage_guild
+        )
+        if not is_admin and not await bot.is_owner(member):
+            await interaction.response.send_message(
+                "自動参加の変更はサーバー管理者のみ行えます。", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await bot.save_auto_join(enabled)
+        except (ConfigError, OSError) as exc:
+            await interaction.followup.send(f"❌ 保存に失敗しました: {exc}")
+            return
+        state = "ON" if enabled else "OFF"
+        await interaction.followup.send(
+            f"配信開始時の自動参加を {state} にしました（全サーバー共通）。"
+        )
+
     return group
 
 
@@ -286,10 +344,14 @@ def _build_setting_command(bot: TwitchTTSBot) -> app_commands.Command:
             await interaction.followup.send(f"❌ 保存に失敗しました: {exc}")
             return
 
+        if bot.config.auto_join_on_stream:
+            hint = "配信を開始して VC にいると、自動で読み上げを始めます。"
+        else:
+            hint = "VC に入って `/tts join` すると読み上げを開始します。"
         await interaction.followup.send(
             "✅ config.yaml に保存し、ホットリロードしました。\n"
             f"{target.mention} ⇔ Twitch: {_format_channels(channels)}\n"
-            "VC に入って `/tts join` すると読み上げを開始します。"
+            f"{hint}"
         )
 
     return tts_setting

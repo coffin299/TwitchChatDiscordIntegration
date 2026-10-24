@@ -12,9 +12,11 @@ import aiohttp
 import discord
 from discord import app_commands
 
+from .auto_join import AutoJoinController
 from .commands import register_commands
+from .english_kana import warm_english_kana
 from .config import AppConfig, UserConfig, VoiceConfig, load_config
-from .config_writer import upsert_user
+from .config_writer import set_auto_join_on_stream, upsert_user
 from .guild_speaker import GuildSpeaker, Listener
 from .tts_engines import TTSEngine, TTSError, create_engines
 from .twitch_irc import ChatMessage, TwitchChatClient
@@ -52,6 +54,11 @@ class TwitchTTSBot(discord.Client):
         # Bot オーナー（チーム所有ならメンバー全員）の ID キャッシュ
         self._owner_ids: frozenset[int] | None = None
         self._commands_synced = False
+        # リスナーの追加・削除。VC 接続の完了待ちでは取らない（切断処理とデッドロックするため）
+        self.session_lock = asyncio.Lock()
+        # 自動参加と /tts join が同時に connect しないようにする
+        self.connect_lock = asyncio.Lock()
+        self.auto_join = AutoJoinController(self)
 
     def _voice_client_getter(
         self, guild_id: int
@@ -77,6 +84,8 @@ class TwitchTTSBot(discord.Client):
         self._http = aiohttp.ClientSession()
         register_commands(self)
         await self._apply_config(self.config)
+        # モデル読み込みはファイル I/O を含むので、イベントループの外で温める
+        await asyncio.to_thread(warm_english_kana)
 
     async def _apply_config(self, config: AppConfig) -> None:
         """設定をエンジン・稼働中セッションへ反映する（起動時・リロード時共通）。"""
@@ -179,6 +188,17 @@ class TwitchTTSBot(discord.Client):
         async with self._config_lock:
             return await self._hot_reload_locked()
 
+    async def save_auto_join(self, enabled: bool) -> AppConfig:
+        """配信開始時の自動参加を config.yaml に保存して反映する。"""
+        async with self._config_lock:
+            await asyncio.to_thread(
+                set_auto_join_on_stream, self.config_path, enabled
+            )
+            config = await self._hot_reload_locked()
+        # ON に戻したら、次の周期を待たずに在室中の配信を確認する
+        self.auto_join.notify_voice_change()
+        return config
+
     async def save_user_setting(
         self, user_id: int, channels: tuple[str, ...]
     ) -> AppConfig:
@@ -220,32 +240,75 @@ class TwitchTTSBot(discord.Client):
         self._rebuild_routes()
         return speaker
 
-    async def remove_listener(self, guild_id: int, user_id: int) -> bool:
-        """配信者を読み上げ対象から外す。誰もいなくなれば VC から退出する。"""
+    def _remove_listener_locked(
+        self, guild_id: int, user_id: int
+    ) -> tuple[bool, discord.VoiceClient | None]:
+        """配信者を外す（ロック取得済み）。退出するなら VoiceClient も返す。"""
         speaker = self._sessions.get(guild_id)
         # セッションが無い、または対象が参加していなければ何もしない
         if speaker is None or not speaker.remove_listener(user_id):
-            return False
-        # 最後の 1 人が抜けたらセッションごと終了
+            return False, None
+        # 最後の 1 人が抜けたらセッションごと終了（切断は呼び出し側）
         if not speaker.listeners:
-            await self.end_session(guild_id)
-        else:
+            _existed, vc = self._end_session_locked(guild_id, disconnect=True)
+            return True, vc
+        self._rebuild_routes()
+        return True, None
+
+    def _end_session_locked(
+        self, guild_id: int, disconnect: bool
+    ) -> tuple[bool, discord.VoiceClient | None]:
+        """セッションを捨てる（ロック取得済み）。切断は呼び出し側で行う。"""
+        speaker = self._sessions.pop(guild_id, None)
+        if speaker is not None:
+            speaker.stop()
             self._rebuild_routes()
-        return True
+        vc = self._voice_client_getter(guild_id)() if disconnect else None
+        return speaker is not None, vc
+
+    async def remove_listener(self, guild_id: int, user_id: int) -> bool:
+        """配信者を読み上げ対象から外す。誰もいなくなれば VC から退出する。"""
+        async with self.session_lock:
+            removed, vc = self._remove_listener_locked(guild_id, user_id)
+        # 切断はロックの外で行う（ボイス状態イベントが同じロックを待つため）
+        if vc is not None:
+            await vc.disconnect(force=False)
+        return removed
+
+    async def stop_listener(
+        self, guild_id: int, user_id: int
+    ) -> tuple[bool, GuildSpeaker | None]:
+        """1 人の読み上げを止め、配信が終わるか VC を出るまで自動参加を保留する。"""
+        async with self.session_lock:
+            speaker = self._sessions.get(guild_id)
+            if speaker is None or user_id not in speaker.listeners:
+                return False, None
+            self.auto_join.pause(guild_id, [user_id])
+            _removed, vc = self._remove_listener_locked(guild_id, user_id)
+        if vc is not None:
+            await vc.disconnect(force=False)
+        return True, self.session_for(guild_id)
+
+    async def leave_guild(self, guild_id: int) -> bool:
+        """全員分の読み上げを止めて退出する。配信中は自動で戻さない。"""
+        async with self.session_lock:
+            speaker = self._sessions.get(guild_id)
+            if speaker is not None:
+                self.auto_join.pause(guild_id, list(speaker.listeners))
+            had_session, vc = self._end_session_locked(guild_id, disconnect=True)
+        if vc is not None:
+            await vc.disconnect(force=False)
+        return had_session
 
     async def end_session(
         self, guild_id: int, disconnect: bool = True
     ) -> bool:
         """サーバーの読み上げを終了する。セッションがあれば True。"""
-        speaker = self._sessions.pop(guild_id, None)
-        if speaker is not None:
-            speaker.stop()
-            self._rebuild_routes()
-        # 必要なら VC からも退出
-        vc = self._voice_client_getter(guild_id)()
-        if disconnect and vc is not None:
+        async with self.session_lock:
+            existed, vc = self._end_session_locked(guild_id, disconnect)
+        if vc is not None:
             await vc.disconnect(force=False)
-        return speaker is not None
+        return existed
 
     # ------------------------------------------------------------
     # Discord イベント
@@ -253,6 +316,7 @@ class TwitchTTSBot(discord.Client):
     async def on_ready(self) -> None:
         """接続完了時にスラッシュコマンドを同期する。"""
         log.info("Discord にログインしました: %s", self.user)
+        self.auto_join.start()
         # 再接続のたびに on_ready が来るため同期は初回のみ
         if not self._commands_synced:
             self._commands_synced = True
@@ -278,6 +342,11 @@ class TwitchTTSBot(discord.Client):
         after: discord.VoiceState,
     ) -> None:
         """Bot の切断や、VC に人がいなくなったときにセッションを片付ける。"""
+        # 入退室のたびに配信中かどうかも見る（ミュート変更では起こさない）
+        if before.channel != after.channel and (
+            self.user is None or member.id != self.user.id
+        ):
+            self.auto_join.notify_voice_change()
         guild_id = member.guild.id
         if self.user is not None and member.id == self.user.id:
             # Bot 自身が VC から外された（キック等）ならセッションだけ終了
@@ -299,11 +368,25 @@ class TwitchTTSBot(discord.Client):
         """Bot のいる VC に Bot 以外が 1 人もいなければ退出する。"""
         vc = self._voice_client_getter(guild_id)()
         # 未接続なら何もしない
-        if vc is None:
+        if vc is None or vc.channel is None:
             return
-        # 他の Bot は人数に数えない
-        if any(not m.bot for m in vc.channel.members):
-            return
+        guild = self.get_guild(guild_id)
+        states = getattr(vc.channel, "voice_states", None)
+        # members はキャッシュが無いと空になる。voice_states なら在室者 ID は分かる
+        if isinstance(states, dict):
+            occupants = states
+        else:
+            occupants = {
+                member.id: None
+                for member in getattr(vc.channel, "members", ())
+            }
+        for user_id in occupants:
+            if self.user is not None and user_id == self.user.id:
+                continue
+            member = guild.get_member(user_id) if guild is not None else None
+            # 未キャッシュは人間とみなす（空扱いで退出すると自動参加と往復する）
+            if member is None or not member.bot:
+                return
         log.info("VC %s が無人になったため退出します", vc.channel.name)
         await self.end_session(guild_id)
 
@@ -328,6 +411,14 @@ class TwitchTTSBot(discord.Client):
 
     async def close(self) -> None:
         """終了時に Twitch 受信と HTTP セッションを片付ける。"""
+        task = self.auto_join.stop()
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("自動参加タスクの停止中にエラー")
         if self._twitch_task is not None:
             self._twitch_task.cancel()
         if self._http is not None:

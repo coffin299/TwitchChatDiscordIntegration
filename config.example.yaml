@@ -14,6 +14,11 @@ ffmpeg_path: ffmpeg
 # ログレベル: DEBUG / INFO / WARNING / ERROR
 log_level: INFO
 
+# 登録した配信者が配信を開始し、いずれかの VC にいるとき Bot がそこへ入る
+# 同じ VC に登録配信者が複数いても参加する（テキスト通知はせず、VC で読み上げる）
+# 省略時も true。止めるときは false か /tts autojoin
+auto_join_on_stream: true
+
 # ------------------------------------------------------------
 # 音声合成エンジン（サブPCで起動しておく）
 #   type: voicevox  … VOICEVOX / COEIROINK v1 / SHAREVOX など VOICEVOX 互換 API
@@ -61,6 +66,7 @@ defaults:
 # ------------------------------------------------------------
 # Discord ユーザー ID : Twitch チャンネル の対応表
 #   ・サーバー ID の設定は不要。Bot がいるどのサーバーでも使えます
+#   ・配信開始時は auto_join_on_stream（既定 true）で、いる VC へ自動参加する
 #   ・登録した人が VC で /tts join すると、その人の Twitch コメントを読みます
 #   ・最小構成は「DiscordユーザーID: Twitchチャンネル名（または URL）」の 1 行
 #   ・Twitch チャンネルはリストで複数指定可（コラボ配信など）

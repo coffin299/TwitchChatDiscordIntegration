@@ -19,7 +19,7 @@ if not exist "%VENV_PY%" (
 )
 
 rem Install dependencies into .venv if any are missing
-"%VENV_PY%" -B -c "import aiohttp, discord, nacl, davey, yaml, ruamel.yaml" 2>nul
+"%VENV_PY%" -B -c "import aiohttp, discord, nacl, davey, yaml, ruamel.yaml, e2k" 2>nul
 if errorlevel 1 (
     echo Installing dependencies into .venv ...
     rem --no-compile avoids creating .pyc files in site-packages

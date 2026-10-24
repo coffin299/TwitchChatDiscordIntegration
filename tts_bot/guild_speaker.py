@@ -11,6 +11,7 @@ from typing import Callable
 import discord
 
 from .config import UserConfig, VoiceConfig
+from .english_kana import english_to_kana
 from .text_filter import build_speech_text
 from .tts_engines import TTSEngine, TTSError
 from .twitch_irc import ChatMessage
@@ -121,6 +122,10 @@ class GuildSpeaker:
         voice = profile.viewer_voices.get(message.login, profile.voice)
         self._queue.put_nowait((text, voice))
 
+    def enqueue(self, text: str, voice: VoiceConfig) -> None:
+        """整形済みのテキストをそのまま再生キューへ積む（開始アナウンス用）。"""
+        self._queue.put_nowait((text, voice))
+
     def clear(self) -> int:
         """未再生のキューを全て破棄し、破棄件数を返す。"""
         count = 0
@@ -166,8 +171,10 @@ class GuildSpeaker:
         # リロードでエンジンが削除された後の古いキューは捨てる
         if engine is None:
             return
+        # 辞書適用などの整形が終わった文を、エンジンへ渡す直前にカタカナ化する
+        spoken = english_to_kana(text)
         try:
-            wav = await engine.synthesize(text, voice)
+            wav = await engine.synthesize(spoken, voice)
         except TTSError as exc:
             # 話者未インストールが原因なら分かりやすい理由に置き換える
             if not await self._voice_exists(engine, voice):
@@ -191,5 +198,5 @@ class GuildSpeaker:
             source,
             after=lambda _err: loop.call_soon_threadsafe(finished.set),
         )
-        log.debug("[%s] 読み上げ: %s", self.guild_id, text)
+        log.debug("[%s] 読み上げ: %s", self.guild_id, spoken)
         await finished.wait()
