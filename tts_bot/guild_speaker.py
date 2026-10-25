@@ -41,6 +41,7 @@ class GuildSpeaker:
         engines: dict[str, TTSEngine],
         get_voice_client: Callable[[], discord.VoiceClient | None],
         ffmpeg_path: str,
+        extra_dictionary: Callable[[int], dict[str, str]] | None = None,
     ) -> None:
         self.guild_id = guild_id
         # Discord ユーザー ID → 配信者設定（参加順を維持）
@@ -48,6 +49,8 @@ class GuildSpeaker:
         self._engines = engines
         self._get_voice_client = get_voice_client
         self._ffmpeg_path = ffmpeg_path
+        # dictionary.yaml の、その配信者用の読み替え（無ければ空）
+        self._extra_dictionary = extra_dictionary or (lambda _user_id: {})
         # (読み上げテキスト, 声) を溜めるキュー（上限は配信者ごとに判定）
         self._queue: asyncio.Queue[tuple[str, VoiceConfig]] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
@@ -110,7 +113,11 @@ class GuildSpeaker:
         # このセッションで読まないチャンネルなら無視
         if profile is None:
             return
-        text = build_speech_text(message, profile.reading)
+        text = build_speech_text(
+            message,
+            profile.reading,
+            self._extra_dictionary(profile.discord_user_id),
+        )
         # 読み上げ対象外なら何もしない
         if text is None:
             return

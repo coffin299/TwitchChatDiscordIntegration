@@ -16,12 +16,14 @@ sys.dont_write_bytecode = True
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
 import logging  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 import aiohttp  # noqa: E402
 import discord  # noqa: E402
 
 from tts_bot.bot import TwitchTTSBot  # noqa: E402
 from tts_bot.config import AppConfig, ConfigError, load_config  # noqa: E402
+from tts_bot.dictionary import load_dictionary  # noqa: E402
 from tts_bot.tts_engines import TTSError, create_engines  # noqa: E402
 
 
@@ -61,6 +63,12 @@ def main() -> int:
     try:
         # 話者一覧の確認だけならトークン未設定でも動かせるようにする
         config = load_config(args.config, require_token=not args.list_speakers)
+        # 読み替え辞書は config.yaml と同じ場所の dictionary.yaml
+        dictionaries = (
+            {}
+            if args.list_speakers
+            else load_dictionary(Path(args.config).with_name("dictionary.yaml"))
+        )
     except ConfigError as exc:
         print(f"設定エラー: {exc}", file=sys.stderr)
         return 1
@@ -73,7 +81,7 @@ def main() -> int:
     # 不正なログレベル名は INFO にフォールバック
     level = getattr(logging, config.log_level, logging.INFO)
     # 設定ファイルのパスは /tts_setting の書き込み・ホットリロードで使う
-    bot = TwitchTTSBot(config, args.config)
+    bot = TwitchTTSBot(config, args.config, dictionaries)
     try:
         # root_logger=True で本 Bot 自身のログも discord.py の書式で標準出力へ出す
         bot.run(config.discord_token, log_level=level, root_logger=True)

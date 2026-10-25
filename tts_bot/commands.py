@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 
 from .config import ConfigError, normalize_channel
+from .dictionary import validate_entry
 from .guild_speaker import GuildSpeaker
 
 if TYPE_CHECKING:
@@ -59,6 +60,7 @@ def register_commands(bot: TwitchTTSBot) -> None:
     bot.tree.add_command(_build_tts_group(bot))
     bot.tree.add_command(_build_setting_command(bot))
     bot.tree.add_command(_build_reload_command(bot))
+    bot.tree.add_command(_build_dictionary_group(bot))
 
 
 def _build_tts_group(bot: TwitchTTSBot) -> app_commands.Group:
@@ -375,7 +377,143 @@ def _build_reload_command(bot: TwitchTTSBot) -> app_commands.Command:
             )
             return
         await interaction.followup.send(
-            f"✅ 再読み込みしました（{len(config.users)} ユーザー）。"
+            f"✅ 再読み込みしました（{len(config.users)} ユーザー、"
+            f"辞書 {len(bot.dictionaries)} ユーザー）。"
         )
 
     return tts_reload
+
+
+def _code(text: str) -> str:
+    """Discord のインラインコードに埋め込めるよう、バッククォートを除く。"""
+    return text.replace("`", "'")
+
+
+def _dictionary_subject(interaction: discord.Interaction, target: discord.abc.User) -> str:
+    """メッセージに出す「誰の辞書か」。"""
+    if target.id == interaction.user.id:
+        return "あなたの配信"
+    return f"{target.mention} の配信"
+
+
+def _build_dictionary_group(bot: TwitchTTSBot) -> app_commands.Group:
+    """/dictionary（よく来る人・語句の読み替え）を作る。"""
+    group = app_commands.Group(
+        name="dictionary",
+        description="よく来る人や語句の読み替え",
+    )
+
+    @group.command(name="add", description="読み替えを登録します（自分の配信コメントに使います）")
+    @app_commands.describe(
+        word="Twitchのログイン名・表示名、または置き換える語句",
+        reading="読み上げるよみ（ひらがな・カタカナ）",
+        user="誰の辞書に登録するか（省略時は自分。他人はBotオーナーのみ）",
+    )
+    async def add(
+        interaction: discord.Interaction,
+        word: str,
+        reading: str,
+        user: discord.User | None = None,
+    ) -> None:
+        target = user or interaction.user
+        if not await _ensure_can_edit(bot, interaction, target):
+            return
+        try:
+            word, reading = validate_entry(word, reading)
+        except ConfigError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        # ファイル書き込みで時間がかかるため応答を保留
+        await interaction.response.defer(ephemeral=True)
+        try:
+            status = await bot.save_dictionary_entry(target.id, word, reading)
+        except (ConfigError, OSError) as exc:
+            log.warning("dictionary add に失敗: %s", exc)
+            await interaction.followup.send(f"❌ 保存に失敗しました: {exc}")
+            return
+        verb = "更新しました" if status == "updated" else "登録しました"
+        whose = _dictionary_subject(interaction, target)
+        await interaction.followup.send(
+            f"✅ `{_code(word)}` → `{_code(reading)}` を{verb}。\n"
+            f"{whose}では、ログイン名か表示名が一致するとこの読みになります"
+            "（本文中の同じ語句も置き換えます）。"
+        )
+
+    @group.command(name="remove", description="読み替え辞書から削除します")
+    @app_commands.describe(
+        word="削除するログイン名・表示名・語句",
+        user="誰の辞書から消すか（省略時は自分。他人はBotオーナーのみ）",
+    )
+    async def remove(
+        interaction: discord.Interaction,
+        word: str,
+        user: discord.User | None = None,
+    ) -> None:
+        target = user or interaction.user
+        if not await _ensure_can_edit(bot, interaction, target):
+            return
+        word = word.strip()
+        if not word:
+            await interaction.response.send_message(
+                "削除する語句を入力してください。", ephemeral=True
+            )
+            return
+        known = {
+            key.casefold() for key in bot.dictionary_for(target.id)
+        }
+        if word.casefold() not in known:
+            await interaction.response.send_message(
+                f"`{_code(word)}` は辞書にありません。", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            removed = await bot.delete_dictionary_entry(target.id, word)
+        except (ConfigError, OSError) as exc:
+            log.warning("dictionary remove に失敗: %s", exc)
+            await interaction.followup.send(f"❌ 削除に失敗しました: {exc}")
+            return
+        if not removed:
+            await interaction.followup.send(
+                f"`{_code(word)}` は辞書にありません。"
+            )
+            return
+        await interaction.followup.send(
+            f"✅ `{_code(word)}` を辞書から削除しました。"
+        )
+
+    @group.command(name="list", description="読み替え辞書の登録一覧を表示します")
+    @app_commands.describe(
+        user="誰の辞書を見るか（省略時は自分。他人はBotオーナーのみ）",
+    )
+    async def show(
+        interaction: discord.Interaction,
+        user: discord.User | None = None,
+    ) -> None:
+        target = user or interaction.user
+        if not await _ensure_can_edit(bot, interaction, target):
+            return
+        entries = bot.dictionary_for(target.id)
+        whose = _dictionary_subject(interaction, target)
+        if not entries:
+            await interaction.response.send_message(
+                f"{whose}の辞書は空です。`/dictionary add` で追加できます。",
+                ephemeral=True,
+            )
+            return
+        lines = [f"{whose}の読み替え（{len(entries)} 件）"]
+        hidden = 0
+        for key in sorted(entries, key=str.casefold):
+            line = f"・`{_code(key)}` → `{_code(entries[key])}`"
+            # Discord のメッセージ上限に収める
+            if sum(len(item) + 1 for item in lines) + len(line) > 1800:
+                hidden = len(entries) - (len(lines) - 1)
+                break
+            lines.append(line)
+        if hidden:
+            lines.append(f"…ほか {hidden} 件")
+        await interaction.response.send_message(
+            "\n".join(lines), ephemeral=True
+        )
+
+    return group

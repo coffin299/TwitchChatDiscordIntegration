@@ -25,12 +25,13 @@ Twitch のチャットを **VOICEVOX / COEIROINK** で音声合成し、**Discor
   - 1 人に複数 Twitch チャンネルを登録可（コラボ配信など）
 - ユーザーごと・Twitch 視聴者ごとに話者・話速などを変更
 - エモート除去、URL 省略、長文省略、読み替え辞書、無視ユーザー、コマンド（`!` 始まり）無視
+- **`/dictionary add` でよく来る人の名前と読みを登録** → `dictionary.yaml` に保存してすぐ反映（再起動不要）
 - 英語は音声合成の直前にカタカナへ変換する（単語は読み、`GG` のような略語は文字読み。`www` はそのまま）
 - VC が無人になったら自動退出
 - **配信開始で VC へ自動参加**（既定 ON。同じ VC の登録配信者はまとめて読む）
 - **`/tts_setting` で自分の Twitch を登録** → `config.yaml` に保存して即ホットリロード（再起動不要）
 - **1 つの VC で複数配信者のコメントを同時に読み上げ**（配信者ごとに声・エンジンを分けられ、VOICEVOX と COEIROINK の混在も可）
-- スラッシュコマンド: `/tts join` `/tts stop` `/tts leave` `/tts skip` `/tts status` `/tts autojoin` `/tts_setting` `/tts_reload`
+- スラッシュコマンド: `/tts join` `/tts stop` `/tts leave` `/tts skip` `/tts status` `/tts autojoin` `/tts_setting` `/tts_reload` `/dictionary add` `/dictionary remove` `/dictionary list`
 
 ## 必要なもの（サブPC）
 
@@ -126,7 +127,10 @@ python -B main.py
 | `/tts status` | 全員 | VC・待機件数と、読み上げ中の配信者ごとの Twitch チャンネル・エンジンを表示 |
 | `/tts autojoin [enabled]` | 表示は全員、変更はサーバー管理 | 配信開始時の自動参加を表示・切り替え（全サーバー共通、`config.yaml` に保存） |
 | `/tts_setting twitch [user]` | 全員 | 自分の Twitch を登録・変更し、`config.yaml` に保存してホットリロード |
-| `/tts_reload` | サーバー管理 | `config.yaml` を手動編集した後に再読み込み |
+| `/tts_reload` | サーバー管理 | `config.yaml` と `dictionary.yaml` を手動編集した後に再読み込み |
+| `/dictionary add word reading [user]` | 全員 | よく来る人の ID や語句の読みを `dictionary.yaml` に登録（他人は Bot オーナーのみ） |
+| `/dictionary remove word [user]` | 全員 | 読み替えを削除 |
+| `/dictionary list [user]` | 全員 | 登録一覧を表示 |
 
 - **同じ VC に配信者が複数いる場合**は、それぞれが `/tts join` すると全員分の配信が読み上げ対象に追加されます（後から join しても前の人は外れません）
   - コメントは、その配信者の `voice`（VOICEVOX / COEIROINK どちらでも可）と `reading` で読みます
@@ -176,11 +180,30 @@ python -B main.py
 - 登録済みなら `twitch` だけを上書きし、`voice` などの個別設定は残します
 - `config.yaml` のコメントは保持されます。保存前に検証し、不正なら書き込みません
 
+### `/dictionary` 読み替え辞書
+
+よく来る人の名前は、`config.yaml` と同じフォルダの **`dictionary.yaml`** に保存します。配信者（Discord ユーザー）ごとの辞書です。
+
+| コマンド | 例 | 動作 |
+| :--- | :--- | :--- |
+| `/dictionary add` | `word:someviewer` `reading:サムビューアー` | その人の名前を「サムビューアー」と読む |
+| `/dictionary remove` | `word:someviewer` | その登録を消す |
+| `/dictionary list` | | 登録一覧 |
+
+- `word` には Twitch のログイン名、チャットの表示名、または本文中で置き換えたい語句を書きます
+- ログイン名か表示名が登録と一致したとき（大文字小文字は無視）、名前全体をその読みにします
+- コメント本文に同じ語句があれば、そこも読みに置き換えます（長い語を優先）
+- 反映はコマンドの直後です。読み上げを止める必要はありません
+- 手で `dictionary.yaml` を編集したあとは `/tts_reload`
+- 他人の辞書を変えるのは Bot オーナーのみです
+- `config.yaml` の `reading.dictionary`（`草` など）も引き続き有効です。同じ語は `dictionary.yaml` が優先されます
+- ひな型は [`dictionary.example.yaml`](dictionary.example.yaml) です。ファイルが無くても `/dictionary add` が作成します
+
 ### ホットリロード
 
 `/tts_setting` 実行後、または `/tts_reload` で `config.yaml` を再読み込みし、Bot を再起動せずに反映します。
 
-- 反映されるもの: `users` の追加・変更・削除、`engines`、`defaults`、`ffmpeg_path`、`auto_join_on_stream`
+- 反映されるもの: `users` の追加・変更・削除、`engines`、`defaults`、`ffmpeg_path`、`auto_join_on_stream`、`dictionary.yaml`
 - 読み上げ中のユーザーの設定が変わった場合は、そのまま新しい設定で読み上げを続けます
 - 削除されたユーザーの読み上げは止めて VC から退出します
 - Twitch には読み上げ中のチャンネルだけ接続し、変化したときだけ IRC を再接続します
@@ -258,7 +281,7 @@ users:
 | `strip_emotes` | `true` | Twitch エモートを読まない |
 | `ignore_users` | `[]` | 読まない Twitch ユーザー |
 | `ignore_prefixes` | `["!"]` | このプレフィックスで始まるコメントは読まない |
-| `dictionary` | `{}` | 読み替え辞書（長い語から順に置換） |
+| `dictionary` | `{}` | 読み替え辞書（長い語から順に置換）。よく来る人は `dictionary.yaml`（`/dictionary add`） |
 | `max_queue` | `20` | 未再生コメントの上限（超過分は破棄） |
 
 ## エンジンを別PCで動かす場合
@@ -274,9 +297,11 @@ Bot とエンジンは同じサブPCで動かすのが簡単ですが、別PCの
 main.py                 エントリーポイント（Bot 起動 / 話者一覧）
 start.bat               Windows 用起動スクリプト
 config.example.yaml     設定サンプル
+dictionary.example.yaml 読み替え辞書のサンプル（実体は dictionary.yaml）
 tts_bot/
   config.py             YAML 読み込み・検証
   config_writer.py      config.yaml へのユーザー登録書き込み（コメント保持）
+  dictionary.py         dictionary.yaml の読み書き（/dictionary）
   twitch_irc.py         Twitch チャット受信（匿名 IRC）
   text_filter.py        読み上げテキスト整形
   tts_engines.py        VOICEVOX / COEIROINK API クライアント
@@ -295,6 +320,7 @@ tts_bot/
 | `/tts join` で「未登録」と出る | `/tts join twitch:<URL>` で一時指定するか、`/tts_setting twitch:<URL>` で登録 |
 | `servers は廃止しました` エラー | 旧形式の設定です。`servers:` を `users:` にし、キーを Discord ユーザー ID に変更 |
 | `/tts_setting` で保存失敗 | Bot の実行ユーザーが `config.yaml` に書き込めるか、YAML が壊れていないか確認 |
+| `/dictionary add` で保存失敗 | `dictionary.yaml` に書き込めるか、YAML が壊れていないか確認 |
 | VC に入るが無音 | ffmpeg のパス、エンジンの起動状態（起動ログの「接続OK」）を確認 |
 | `エンジン ... に接続できません` | エンジンの起動・URL・ポートを確認。後からエンジンを起動しても読み上げ時に再接続します |
 | COEIROINK で合成失敗 | `type: coeiroink` は v2 用。v1 の場合は `type: voicevox` + `:50031` |

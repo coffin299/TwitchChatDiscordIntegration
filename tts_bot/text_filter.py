@@ -38,15 +38,52 @@ def strip_emotes(text: str, emotes_tag: str) -> str:
     return "".join(ch for i, ch in enumerate(text) if i not in removed)
 
 
-def apply_dictionary(text: str, dictionary: dict[str, str]) -> str:
+def apply_dictionary(
+    text: str, dictionary: dict[str, str], *, ignore_case: bool = False
+) -> str:
     """読み替え辞書を適用する（長い語から順に置換して部分一致の衝突を防ぐ）。"""
     for word in sorted(dictionary, key=len, reverse=True):
-        text = text.replace(word, dictionary[word])
+        # 空キーはあらゆる位置に一致してしまう
+        if not word:
+            continue
+        reading = dictionary[word]
+        if not ignore_case:
+            text = text.replace(word, reading)
+            continue
+        # 読みの中の \\ を正規表現の後方参照として解釈しない
+        text = re.sub(
+            re.escape(word),
+            lambda _match, repl=reading: repl,
+            text,
+            flags=re.IGNORECASE,
+        )
     return text
 
 
+def lookup_reading(names: tuple[str, ...], dictionary: dict[str, str]) -> str | None:
+    """ログイン名または表示名が辞書と一致したら、その読みを返す。
+
+    一致は語句全体（大文字小文字は無視）。部分一致では名前を変えない。
+    """
+    if not dictionary:
+        return None
+    folded: dict[str, str] = {}
+    for key, value in dictionary.items():
+        if key:
+            folded.setdefault(key.casefold(), value)
+    for name in names:
+        if name in dictionary:
+            return dictionary[name]
+        hit = folded.get(name.casefold())
+        if hit is not None:
+            return hit
+    return None
+
+
 def build_speech_text(
-    message: ChatMessage, reading: ReadingConfig
+    message: ChatMessage,
+    reading: ReadingConfig,
+    viewer_dictionary: dict[str, str] | None = None,
 ) -> str | None:
     """チャットメッセージを読み上げテキストへ変換する。読まない場合は None。"""
     # 無視ユーザー（Bot 等）は読まない
@@ -63,7 +100,10 @@ def build_speech_text(
         body = strip_emotes(body, message.tags.get("emotes", ""))
     # URL を置換
     body = _URL_PATTERN.sub(reading.url_replacement, body)
-    # 読み替え辞書を適用
+    # dictionary.yaml を先に適用し、同じ語はこちらを優先する
+    viewers = viewer_dictionary or {}
+    body = apply_dictionary(body, viewers, ignore_case=True)
+    # config.yaml の読み替え辞書を適用
     body = apply_dictionary(body, reading.dictionary)
     # 空白を整理
     body = _SPACES_PATTERN.sub(" ", body).strip()
@@ -77,8 +117,11 @@ def build_speech_text(
     # 名前を読まない設定なら本文だけ返す
     if not reading.read_name:
         return body
-    # 表示名にも辞書を適用してから書式に埋め込む
-    name = apply_dictionary(message.display_name, reading.dictionary)
+    # ログイン名か表示名が登録されていれば、名前全体をその読みにする
+    name = lookup_reading((message.display_name, message.login), viewers)
+    if name is None:
+        # 未登録の表示名には config.yaml の辞書だけを適用する
+        name = apply_dictionary(message.display_name, reading.dictionary)
     # {channel} で配信チャンネル名も読める（複数配信者が同じ VC にいる場合向け）
     return reading.format.format(
         name=name, message=body, channel=message.channel

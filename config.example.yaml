@@ -59,6 +59,7 @@ defaults:
       - streamelements
     ignore_prefixes:              # この文字で始まるコメントは読まない
       - "!"
+    # よく来る人の名前は dictionary.yaml（/dictionary add）に登録する
     dictionary:                   # 読み替え辞書（単純な文字列置換）
       "8888": ぱちぱち
       草: くさ

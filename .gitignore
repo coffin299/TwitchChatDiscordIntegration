@@ -1,5 +1,6 @@
-# 秘密情報を含む実設定
+# 秘密情報を含む実設定と、コマンドで増える読み替え辞書
 config.yaml
+dictionary.yaml
 .env
 
 # Python
@@ -8,3 +9,4 @@ __pycache__/
 .venv/
 venv/
 config.yaml.tmp
+dictionary.yaml.tmp

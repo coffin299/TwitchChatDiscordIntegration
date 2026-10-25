@@ -17,6 +17,7 @@ from .commands import register_commands
 from .english_kana import warm_english_kana
 from .config import AppConfig, UserConfig, VoiceConfig, load_config
 from .config_writer import set_auto_join_on_stream, upsert_user
+from .dictionary import load_dictionary, remove_entry, upsert_entry
 from .guild_speaker import GuildSpeaker, Listener
 from .tts_engines import TTSEngine, TTSError, create_engines
 from .twitch_irc import ChatMessage, TwitchChatClient
@@ -31,7 +32,12 @@ class TwitchTTSBot(discord.Client):
     その人がいるサーバーの VC で読み上げる。サーバー ID の設定は不要。
     """
 
-    def __init__(self, config: AppConfig, config_path: str | Path) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        config_path: str | Path,
+        dictionaries: dict[int, dict[str, str]],
+    ) -> None:
         # サーバー情報と VC 状態だけ受け取れば十分（特権 Intent 不要）
         intents = discord.Intents.none()
         intents.guilds = True
@@ -39,6 +45,9 @@ class TwitchTTSBot(discord.Client):
         super().__init__(intents=intents)
         self.config = config
         self.config_path = Path(config_path)
+        # config.yaml と同じ場所の読み替え辞書（Discord ユーザー ID → 語句 → 読み）
+        self.dictionary_path = self.config_path.with_name("dictionary.yaml")
+        self.dictionaries = dictionaries
         self.tree = app_commands.CommandTree(self)
         self._http: aiohttp.ClientSession | None = None
         self._engines: dict[str, TTSEngine] = {}
@@ -179,8 +188,16 @@ class TwitchTTSBot(discord.Client):
     async def _hot_reload_locked(self) -> AppConfig:
         """設定ファイルを読み直して反映する（呼び出し側でロック取得済み）。"""
         config = await asyncio.to_thread(load_config, self.config_path)
+        dictionaries = await asyncio.to_thread(
+            load_dictionary, self.dictionary_path
+        )
         await self._apply_config(config)
-        log.info("設定をホットリロードしました（%d ユーザー）", len(config.users))
+        self.dictionaries = dictionaries
+        log.info(
+            "設定をホットリロードしました（%d ユーザー、辞書 %d ユーザー）",
+            len(config.users),
+            len(dictionaries),
+        )
         return config
 
     async def reload_config(self) -> AppConfig:
@@ -210,6 +227,35 @@ class TwitchTTSBot(discord.Client):
             )
             return await self._hot_reload_locked()
 
+    def dictionary_for(self, user_id: int) -> dict[str, str]:
+        """その配信者の読み替え辞書を返す（無ければ空）。"""
+        return dict(self.dictionaries.get(user_id, ()))
+
+    async def save_dictionary_entry(
+        self, user_id: int, word: str, reading: str
+    ) -> str:
+        """dictionary.yaml に読み替えを追加・更新し、メモリへ反映する。"""
+        async with self._config_lock:
+            status = await asyncio.to_thread(
+                upsert_entry, self.dictionary_path, user_id, word, reading
+            )
+            self.dictionaries = await asyncio.to_thread(
+                load_dictionary, self.dictionary_path
+            )
+        return status
+
+    async def delete_dictionary_entry(self, user_id: int, word: str) -> bool:
+        """dictionary.yaml から読み替えを削除し、メモリへ反映する。"""
+        async with self._config_lock:
+            removed = await asyncio.to_thread(
+                remove_entry, self.dictionary_path, user_id, word
+            )
+            if removed:
+                self.dictionaries = await asyncio.to_thread(
+                    load_dictionary, self.dictionary_path
+                )
+        return removed
+
     # ------------------------------------------------------------
     # 読み上げセッション
     # ------------------------------------------------------------
@@ -232,6 +278,7 @@ class TwitchTTSBot(discord.Client):
                 self._engines,
                 self._voice_client_getter(guild_id),
                 self.config.ffmpeg_path,
+                self.dictionary_for,
             )
             speaker.start()
             self._sessions[guild_id] = speaker
