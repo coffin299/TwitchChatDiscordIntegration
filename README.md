@@ -26,7 +26,7 @@ Twitch のチャットを **VOICEVOX / COEIROINK** で音声合成し、**Discor
 - ユーザーごと・Twitch 視聴者ごとに話者・話速などを変更
 - エモート除去、URL 省略、長文省略、読み替え辞書、無視ユーザー、コマンド（`!` 始まり）無視
 - **`/dictionary add` でよく来る人の名前と読みを登録** → `dictionary.yaml` に保存してすぐ反映（再起動不要）
-- 英語は音声合成の直前にカタカナへ変換する（単語は読み、`GG` のような略語は文字読み。`www` はそのまま）
+- 英語は音声合成の直前にカタカナへ変換する（[VOICEVOX kanalizer](https://github.com/VOICEVOX/kanalizer)。単語は読み、`GG` のような略語は文字読み。`www` はそのまま）
 - VC が無人になったら自動退出
 - **配信開始で VC へ自動参加**（既定 ON。同じ VC の登録配信者はまとめて読む）
 - **`/tts_setting` で自分の Twitch を登録** → `config.yaml` に保存して即ホットリロード（再起動不要）
