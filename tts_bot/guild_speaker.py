@@ -196,14 +196,22 @@ class GuildSpeaker:
             return
         loop = asyncio.get_running_loop()
         finished = asyncio.Event()
+        # after で受け取った再生エラーを保持する（無音時の切り分け用）
+        play_error: list[BaseException | None] = [None]
+
+        def _after_play(err: BaseException | None) -> None:
+            # ffmpeg / Opus 側の失敗はここに来る
+            play_error[0] = err
+            # after コールバックは別スレッドで呼ばれるため thread-safe に通知
+            loop.call_soon_threadsafe(finished.set)
+
         # WAV をメモリから ffmpeg の標準入力へ流し込む
         source = discord.FFmpegPCMAudio(
             io.BytesIO(wav), pipe=True, executable=self._ffmpeg_path
         )
-        # after コールバックは別スレッドで呼ばれるため thread-safe に通知
-        vc.play(
-            source,
-            after=lambda _err: loop.call_soon_threadsafe(finished.set),
-        )
+        vc.play(source, after=_after_play)
         log.debug("[%s] 読み上げ: %s", self.guild_id, spoken)
         await finished.wait()
+        # 再生失敗を握りつぶすと VC 無音の原因が分からなくなる
+        if play_error[0] is not None:
+            log.error("[%s] VC 再生失敗: %s", self.guild_id, play_error[0])

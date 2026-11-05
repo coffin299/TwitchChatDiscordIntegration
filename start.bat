@@ -18,12 +18,12 @@ if not exist "%VENV_PY%" (
     )
 )
 
-rem Install dependencies into .venv if any are missing
-"%VENV_PY%" -B -c "import aiohttp, discord, nacl, davey, yaml, ruamel.yaml, e2k" 2>nul
+rem Require discord.py 2.7+ with davey (DAVE). Import-only checks miss old installs.
+"%VENV_PY%" -B -c "import discord, nacl, davey; from discord.voice_state import has_dave; assert has_dave; v=tuple(int(x) for x in discord.__version__.split('.')[:2]); assert v>=(2,7)" 2>nul
 if errorlevel 1 (
-    echo Installing dependencies into .venv ...
+    echo Installing / upgrading voice dependencies into .venv ...
     rem --no-compile avoids creating .pyc files in site-packages
-    "%VENV_PY%" -m pip install --no-compile -r requirements.txt
+    "%VENV_PY%" -m pip install -U --no-compile -r requirements.txt
     if errorlevel 1 (
         echo Failed to install dependencies. Check your network and requirements.txt.
         pause

@@ -54,13 +54,13 @@ Twitch のチャットを **VOICEVOX / COEIROINK** で音声合成し、**Discor
 
 ### 2. 仮想環境（.venv）と依存パッケージ
 
-`start.bat` を使う場合は **初回起動時に `.venv` の作成と依存パッケージのインストールを自動で行う** ため、この手順は不要です。
+`start.bat` を使う場合は **初回起動時に `.venv` の作成と依存パッケージのインストールを自動で行う** ため、この手順は不要です。Discord の音声 DAVE 用に `discord.py[voice]>=2.7` と `davey` が必要で、不足・古い場合は起動時に入れ直します。
 
 手動で行う場合:
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install --no-compile -r requirements.txt
+.venv\Scripts\python.exe -m pip install -U --no-compile -r requirements.txt
 ```
 
 ### 3. 設定ファイルを作成

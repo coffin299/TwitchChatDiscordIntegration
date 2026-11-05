@@ -90,11 +90,49 @@ class TwitchTTSBot(discord.Client):
     # ------------------------------------------------------------
     async def setup_hook(self) -> None:
         """ログイン後・接続前の初期化処理。"""
+        # DAVE 用 davey の有無を起動ログに出し、無音切り分けをしやすくする
+        self._log_voice_dependencies()
         self._http = aiohttp.ClientSession()
         register_commands(self)
         await self._apply_config(self.config)
         # モデル読み込みはファイル I/O を含むので、イベントループの外で温める
         await asyncio.to_thread(warm_english_kana)
+
+    @staticmethod
+    def _log_voice_dependencies() -> None:
+        """discord.py / davey / PyNaCl の状態を INFO で出す。"""
+        # discord.py が DAVE 対応かを has_dave で見る（未対応版は属性無し）
+        try:
+            from discord.voice_state import has_dave as dave_ok
+        except ImportError:
+            dave_ok = False
+        # パッケージ版が取れなくても起動は続ける
+        try:
+            import davey as davey_mod
+
+            davey_ver = getattr(davey_mod, "__version__", "unknown")
+        except ImportError:
+            davey_ver = "missing"
+            dave_ok = False
+        try:
+            import nacl
+
+            nacl_ver = getattr(nacl, "__version__", "unknown")
+        except ImportError:
+            nacl_ver = "missing"
+        log.info(
+            "voice deps: discord.py=%s davey=%s (has_dave=%s) PyNaCl=%s",
+            discord.__version__,
+            davey_ver,
+            dave_ok,
+            nacl_ver,
+        )
+        # 古い discord.py や davey 未導入だと VC は入っても相手には無音になる
+        if not dave_ok:
+            log.error(
+                "davey / DAVE が使えません。"
+                "pip install -U --no-compile -r requirements.txt を実行してください"
+            )
 
     async def _apply_config(self, config: AppConfig) -> None:
         """設定をエンジン・稼働中セッションへ反映する（起動時・リロード時共通）。"""
