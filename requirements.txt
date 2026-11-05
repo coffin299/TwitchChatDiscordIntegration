@@ -1,4 +1,6 @@
 discord.py[voice]>=2.7
+# Discord 音声の DAVE（E2EE）に必須。voice extra 経由でも入るが明示しておく
+davey>=0.1.6
 aiohttp>=3.9
 PyYAML>=6.0
 ruamel.yaml>=0.18

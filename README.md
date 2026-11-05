@@ -321,7 +321,7 @@ tts_bot/
 | `servers は廃止しました` エラー | 旧形式の設定です。`servers:` を `users:` にし、キーを Discord ユーザー ID に変更 |
 | `/tts_setting` で保存失敗 | Bot の実行ユーザーが `config.yaml` に書き込めるか、YAML が壊れていないか確認 |
 | `/dictionary add` で保存失敗 | `dictionary.yaml` に書き込めるか、YAML が壊れていないか確認 |
-| VC に入るが無音 | ffmpeg のパス、エンジンの起動状態（起動ログの「接続OK」）を確認 |
+| VC に入るが無音 / `davey library needed` | Discord の DAVE（音声 E2EE）用に `davey` が必要。`.venv\Scripts\python.exe -m pip install -U --no-compile -r requirements.txt` で `discord.py[voice]` と `davey` を入れ直す。あわせて ffmpeg のパス・エンジン起動も確認 |
 | `エンジン ... に接続できません` | エンジンの起動・URL・ポートを確認。後からエンジンを起動しても読み上げ時に再接続します |
 | COEIROINK で合成失敗 | `type: coeiroink` は v2 用。v1 の場合は `type: voicevox` + `:50031` |
 | `/v1/synthesis -> HTTP 500` | COEIROINK に `speaker_uuid` / `style_id` の話者が入っていない場合に多い。`--list-speakers` の値に直すか、`voice.engine: voicevox` に切り替え。起動時ログに「話者 ... がエンジン ... にありません」と出ます |
