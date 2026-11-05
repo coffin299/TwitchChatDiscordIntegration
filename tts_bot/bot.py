@@ -108,12 +108,17 @@ class TwitchTTSBot(discord.Client):
             dave_ok = False
         # パッケージ版が取れなくても起動は続ける
         try:
-            import davey as davey_mod
+            from importlib.metadata import version as pkg_version
 
-            davey_ver = getattr(davey_mod, "__version__", "unknown")
-        except ImportError:
-            davey_ver = "missing"
-            dave_ok = False
+            davey_ver = pkg_version("davey")
+        except Exception:
+            try:
+                import davey as davey_mod
+
+                davey_ver = getattr(davey_mod, "__version__", "unknown")
+            except ImportError:
+                davey_ver = "missing"
+                dave_ok = False
         try:
             import nacl
 
@@ -132,6 +137,19 @@ class TwitchTTSBot(discord.Client):
             log.error(
                 "davey / DAVE が使えません。"
                 "pip install -U --no-compile -r requirements.txt を実行してください"
+            )
+            return
+        # davey 0.2 は鍵切替 API が変わり、discord.py 2.7.1 だと無音になる
+        try:
+            major_minor = tuple(int(part) for part in davey_ver.split(".")[:2])
+        except ValueError:
+            return
+        if major_minor >= (0, 2):
+            log.error(
+                "davey %s は discord.py 2.7.1 と非互換です（VC 無音の原因）。"
+                "davey を 0.1.x に戻してください: "
+                "pip install --no-compile \"davey>=0.1.6,<0.2.0\"",
+                davey_ver,
             )
 
     async def _apply_config(self, config: AppConfig) -> None:

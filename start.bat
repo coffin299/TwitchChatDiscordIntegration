@@ -18,11 +18,11 @@ if not exist "%VENV_PY%" (
     )
 )
 
-rem Require discord.py 2.7+ with davey (DAVE), plus kanalizer for EN reading.
-rem Import-only checks miss old discord.py installs, so assert versions too.
-"%VENV_PY%" -B -c "import discord, nacl, davey, kanalizer; from discord.voice_state import has_dave; assert has_dave; v=tuple(int(x) for x in discord.__version__.split('.')[:2]); assert v>=(2,7)" 2>nul
+rem Require discord.py 2.7.x + davey 0.1.x (not 0.2) + kanalizer.
+rem davey 0.2 breaks voice audio with discord.py 2.7.1 (silent VC).
+"%VENV_PY%" -B -c "import discord, nacl, davey, kanalizer; from importlib.metadata import version; from discord.voice_state import has_dave; assert has_dave; dv=tuple(int(x) for x in discord.__version__.split('.')[:2]); assert dv>=(2,7); y=tuple(int(x) for x in version('davey').split('.')[:2]); assert y<(0,2)" 2>nul
 if errorlevel 1 (
-    echo Installing / upgrading dependencies into .venv ...
+    echo Installing / fixing dependencies into .venv ...
     rem --no-compile avoids creating .pyc files in site-packages
     "%VENV_PY%" -m pip install -U --no-compile -r requirements.txt
     if errorlevel 1 (
